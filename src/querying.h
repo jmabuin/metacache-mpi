@@ -34,7 +34,7 @@
 #include "query_options.h"
 #include "cmdline_utility.h"
 #include "sketch_database.h"
-
+#include "candidates.h"
 
 namespace mc {
 
@@ -256,20 +256,20 @@ query_id query_batched(
  *
  *****************************************************************************/
     template<
-            class BufferSource, class BufferUpdate, class BufferSink,
+            class BufferSource, class BufferClassification, class BufferUpdate, class BufferSink,
             class LogCallback
     >
     query_id query_batched_parallel(
             const std::string& filename1, const std::string& filename2,
-            const database& db, const query_processing_options& opt,
+            const database& db, const query_processing_options& opt, const classification_options& opt_class,
             const query_id& startId,
-            BufferSource&& getBuffer, BufferUpdate&& update, BufferSink&& finalize,
+            BufferSource&& getBuffer, BufferClassification&& bufclass, BufferUpdate&& update, BufferSink&& finalize,
             LogCallback&& log, int my_id)
     {
         std::mutex results_mapMtx;
         std::mutex addSeqMtx;
         std::mutex writeoutMtx;
-        std::map<std::uint_least64_t ,match_target_locations> results_map;
+        std::map<std::uint_least64_t ,classification_candidates > results_map;
         std::map<std::uint_least64_t ,sequence_query> sequences_map;
         std::mutex finalizeMtx;
         //std::atomic<std::int_least64_t> queryLimit{opt.queryLimit};
@@ -366,29 +366,32 @@ query_id query_batched(
                         // Sort by tgt and win
                         merge_sort(matchesBuffer, offsets, matchesBuffer2);
 
-                        if(!matchesBuffer.empty()) {
+                        {
                             std::lock_guard<std::mutex> lock(results_mapMtx);
-                            results_map[seq.first.index] = std::move(matchesBuffer);//std::move(matches);
-                            sequences_map[seq.first.index] = sequence_query{seq.first.index,
-                                                                            std::move(seq.first.header),
-                                                                            std::move(seq.first.data),
-                                                                            std::move(seq.second.data)};
-                        }
-                        else {
-                            std::lock_guard<std::mutex> lock(results_mapMtx);
-                            results_map[seq.first.index] = std::move(matchesBuffer);//std::move(matches);
-                            sequences_map[seq.first.index] = sequence_query{seq.first.index,
-                                                                            std::move(seq.first.header),
-                                                                            std::move(seq.first.data),
-                                                                            std::move(seq.second.data)};
-                                                                             //seq.first.header,
-                                                                             //seq.first.data,
-                                                                             //seq.second.data};
 
+                            sequence_query query = sequence_query{seq.first.index,
+                                                                  seq.first.header,
+                                                                  seq.first.data,
+                                                                  seq.second.data};
+
+                            matches.clear();
+                            for(auto& m : matchesBuffer)
+                                matches.emplace_back(db.taxon_of_target(m.tgt), m.win);
+
+                            auto batchBuffer = getBuffer();
+                            classification_candidates cls = bufclass(batchBuffer, sequence_query{seq.first.index,
+                                                                                                 std::move(seq.first.header),
+                                                                                                 std::move(seq.first.data),
+                                                                                                 std::move(seq.second.data)},
+                                                              matches);
+
+                            results_map[seq.first.index] = std::move(cls);//std::move(matches);
+                            sequences_map[seq.first.index] = std::move(query);
                         }
 
 
                     }
+
                 }
 
                 sequences.clear();
@@ -497,7 +500,7 @@ query_id query_batched(
         */
 
         // First gather all data in rank 0
-        std::map<std::uint_least64_t ,match_locations> all_results_map;
+        std::map<std::uint_least64_t, classification_candidates> all_results_map;
 
         for (auto item = results_map.begin(); (item != results_map.end()) &&
                                               current_seq != sequences_map.end(); ++item, ++current_seq) {
@@ -516,8 +519,10 @@ query_id query_batched(
             unsigned i = 0;
             for(auto current_item = item->second.begin(); current_item  != item->second.end(); ++current_item) {
 
-                items_partial[i] = current_item->tgt;
-                items_partial[i+1] = current_item->win;
+                //items_partial[i] = current_item->tgt;
+                //items_partial[i+1] = current_item->win;
+                items_partial[i] = current_item->tax->id();
+                items_partial[i+1] = current_item->hits;
                 i+=2;
 
 
@@ -529,6 +534,10 @@ query_id query_batched(
             if (my_id == 0) {
 
                 for(int k = 0; k< num_procs; ++k) {
+                    if (item == results_map.begin()) {
+                        std::cout << "Rec items " << recvcnts[k] << std::endl;
+                    }
+
                     total_items += recvcnts[k];
 
                     if (k == 0) {
@@ -547,14 +556,21 @@ query_id query_batched(
 
 
             if (my_id == 0) {
-                match_locations matches;
+
+                classification_candidates cls;
+                candidate_generation_rules rules;
+
+                rules.mergeBelow    = opt_class.lowestRank;
+                rules.maxCandidates = opt_class.maxNumCandidatesPerQuery;
 
                 for(unsigned j = 0; j< total_items; j+=2) {
+                    match_candidate cand{db.taxon_with_id(received_locations[j]), received_locations[j+1]};
+                    cls.insert(cand, db, rules);
 
-                    matches.emplace_back(db.taxon_of_target(received_locations[j]), received_locations[j+1]);
                 }
 
-                all_results_map[current_seq->first] = matches;
+                all_results_map[current_seq->first] = std::move(cls);
+
 
                 /*update(batchBuffer,
                        sequence_query{current_seq->second.id,
@@ -613,6 +629,8 @@ query_id query_batched(
                                               sequences_map[current.first].seq1, //std::move(current_seq->second.seq1),
                                               sequences_map[current.first].seq2},//std::move(current_seq->second.seq2)},
                                current.second );
+                            /*update(batchBuffer, sequences_map[current.first],
+                                   current.second );*/
                         }
                         current_seq++;
                     }
@@ -758,17 +776,18 @@ void query_database(
  *
  *****************************************************************************/
     template<
-            class BufferSource, class BufferUpdate, class BufferSink, class InfoCallback, typename identifier
+            class BufferSource, class BufferClassification, class BufferUpdate, class BufferSink, class InfoCallback, typename identifier
     >
     void query_database_parallel(
             const std::vector<std::string>& infilenames,
             const database& db,
-            const query_processing_options& opt,
-            BufferSource&& bufsrc, BufferUpdate&& bufupdate, BufferSink&& bufsink,
+            const query_processing_options& opt, const classification_options& opt_class,
+            BufferSource&& bufsrc, BufferClassification&& bufclass, BufferUpdate&& bufupdate, BufferSink&& bufsink,
             InfoCallback&& showInfo, identifier my_id)
     {
-        query_database_parallel(infilenames, db, opt,
+        query_database_parallel(infilenames, db, opt, opt_class,
                        std::forward<BufferSource>(bufsrc),
+                       std::forward<BufferClassification>(bufclass),
                        std::forward<BufferUpdate>(bufupdate),
                        std::forward<BufferSink>(bufsink),
                        std::forward<InfoCallback>(showInfo),
@@ -791,14 +810,14 @@ void query_database(
  *
  *****************************************************************************/
     template<
-            class BufferSource, class BufferUpdate, class BufferSink,
+            class BufferSource, class BufferClassification, class BufferUpdate, class BufferSink,
             class InfoCallback, class ProgressHandler, class LogHandler, typename identifier
     >
     void query_database_parallel(
             const std::vector<std::string>& infilenames,
             const database& db,
-            const query_processing_options& opt,
-            BufferSource&& bufsrc, BufferUpdate&& bufupdate, BufferSink&& bufsink,
+            const query_processing_options& opt, const classification_options& opt_class,
+            BufferSource&& bufsrc, BufferClassification&& bufclass, BufferUpdate&& bufupdate, BufferSink&& bufsink,
             InfoCallback&& showInfo, ProgressHandler&& showProgress, LogHandler&& log, identifier my_id)
     {
         const size_t stride = opt.pairing == pairing_mode::files ? 1 : 0;
@@ -841,8 +860,9 @@ void query_database(
 
             for(readIdOffset = 0; readIdOffset < num_seq; readIdOffset += block_size) {
 
-                readIdOffset_two = query_batched_parallel(fname1, fname2, db, opt, readIdOffset,
+                readIdOffset_two = query_batched_parallel(fname1, fname2, db, opt, opt_class, readIdOffset,
                                                           std::forward<BufferSource>(bufsrc),
+                                                          std::forward<BufferClassification>(bufclass),
                                                           std::forward<BufferUpdate>(bufupdate),
                                                           std::forward<BufferSink>(bufsink),
                                                           std::forward<LogHandler>(log),

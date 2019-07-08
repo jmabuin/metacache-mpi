@@ -574,7 +574,62 @@ void show_query_mapping(
     os << '\n';
 }
 
+/*************************************************************************//**
+ *
+ * @brief shows one query mapping line
+ *        [query id], query_header, classification [, [top|all]hits list]
+ *
+ *****************************************************************************/
+    void show_query_mapping(
+            std::ostream& os,
+            const database& db,
+            const classification_output_options& opt,
+            const sequence_query& query,
+            const classification& cls)
+    {
+        if(opt.mapViewMode == map_view_mode::none ||
+           (opt.mapViewMode == map_view_mode::mapped_only && !cls.best))
+        {
+            return;
+        }
 
+        const auto& colsep = opt.format.column;
+
+        if(opt.showQueryIds) os << query.id << colsep;
+
+        //print query header (first contiguous string only)
+        auto l = query.header.find(' ');
+        if(l != string::npos) {
+            auto oit = std::ostream_iterator<char>{os, ""};
+            std::copy(query.header.begin(), query.header.begin() + l, oit);
+        }
+        else {
+            os << query.header;
+        }
+        os << colsep;
+
+        if(opt.showGroundTruth) {
+            show_taxon(os, db, opt, query.groundTruth);
+            os << colsep;
+        }
+
+        if(opt.showTopHits) {
+            show_matches(os, db, cls.candidates, opt.lowestRank);
+            os << colsep;
+        }
+        if(opt.showLocations) {
+            show_candidate_ranges(os, db, cls.candidates);
+            os << colsep;
+        }
+
+        show_taxon(os, db, opt, cls.best);
+
+        if(opt.showAlignment && cls.best) {
+            show_alignment(os, db, opt, query, cls.candidates);
+        }
+
+        os << '\n';
+    }
 
 /*************************************************************************//**
  *
@@ -614,12 +669,23 @@ void map_queries_to_targets_default(
     //creates an empty batch buffer
     const auto makeBatchBuffer = [] { return mappings_buffer(); };
 
+    //updates buffer with the database answer of a single query
+    const auto get_classification = [&] (mappings_buffer& buf,
+                                   sequence_query&& query, match_locations& allhits)
+    {
+
+        prepare_evaluation(db, opt.evaluate, query, allhits);
+
+        classification cls { make_classification_candidates(db, opt.classify, query, allhits) };
+
+        return cls.candidates;
+    };
 
     //updates buffer with the database answer of a single query
     const auto processQuery = [&] (mappings_buffer& buf,
-        sequence_query&& query, match_locations& allhits)
+        sequence_query&& query, classification_candidates& candidates)
     {
-        if(query.empty()) return;
+        /*if(query.empty()) return;
 
         prepare_evaluation(db, opt.evaluate, query, allhits);
 
@@ -630,7 +696,11 @@ void map_queries_to_targets_default(
             //target -> match list
             buf.hitsPerTarget.insert(query.id, allhits, cls.candidates,
                                      opt.classify.hitsMin);
-        }
+        }*/
+
+        auto cls = classification(candidates);
+
+        cls.best = classify(db, opt.classify, cls.candidates);
 
         if(opt.output.makeTaxCounts && cls.best) {
             ++buf.taxCounts[cls.best];
@@ -638,7 +708,7 @@ void map_queries_to_targets_default(
 
         evaluate_classification(db, opt.evaluate, query, cls, results.statistics);
 
-        show_query_mapping(buf.out, db, opt.output, query, cls, allhits);
+        show_query_mapping(buf.out, db, opt.output, query, cls);
     };
 
     //runs before a batch buffer is discarded
@@ -665,8 +735,8 @@ void map_queries_to_targets_default(
     int my_id;
     MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
     //run (parallel) database queries according to processing options
-    query_database_parallel(infiles, db, opt.process,
-                   makeBatchBuffer, processQuery, finalizeBatch,
+    query_database_parallel(infiles, db, opt.process, opt.classify,
+                   makeBatchBuffer, get_classification, processQuery, finalizeBatch,
                    appendToOutput, my_id);
 
     if (my_id == 0) {

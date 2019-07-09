@@ -255,52 +255,287 @@ query_id query_batched(
  * @tparam BufferSink    recieves buffer after batch is finished
  *
  *****************************************************************************/
-    template<
-            class BufferSource, class BufferClassification, class BufferUpdate, class BufferSink,
-            class LogCallback
-    >
-    query_id query_batched_parallel(
-            const std::string& filename1, const std::string& filename2,
-            const database& db, const query_processing_options& opt, const classification_options& opt_class,
-            const query_id& startId,
-            BufferSource&& getBuffer, BufferClassification&& bufclass, BufferUpdate&& update, BufferSink&& finalize,
-            LogCallback&& log, int my_id)
-    {
-        std::mutex results_mapMtx;
-        std::mutex addSeqMtx;
-        std::mutex writeoutMtx;
-        std::map<std::uint_least64_t ,classification_candidates > results_map;
-        std::map<std::uint_least64_t ,sequence_query> sequences_map;
-        std::mutex finalizeMtx;
-        //std::atomic<std::int_least64_t> queryLimit{opt.queryLimit};
-        //std::atomic<query_id> workId{startId};
+template<
+        class BufferSource, class BufferClassification, class BufferUpdate, class BufferSink,
+        class LogCallback
+>
+query_id query_batched_parallel(
+        const std::string& filename1, const std::string& filename2,
+        const database& db, const query_processing_options& opt, const classification_options& opt_class,
+        const query_id& startId,
+        BufferSource&& getBuffer, BufferClassification&& bufclass, BufferUpdate&& update, BufferSink&& finalize,
+        LogCallback&& log, int my_id)
+{
+    std::mutex results_mapMtx;
+    std::mutex addSeqMtx;
+    std::mutex writeoutMtx;
+    std::map<std::uint_least64_t ,classification_candidates > results_map;
+    std::map<std::uint_least64_t ,sequence_query> sequences_map;
+    std::mutex finalizeMtx;
+    //std::atomic<std::int_least64_t> queryLimit{opt.queryLimit};
+    //std::atomic<query_id> workId{startId};
 
-        // store id and position of most advanced thread
-        std::mutex tipMtx;
-        query_id qid{startId};
-        //sequence_pair_reader::stream_positions pos{0,0};
+    // store id and position of most advanced thread
+    std::mutex tipMtx;
+    query_id qid{startId};
+    //sequence_pair_reader::stream_positions pos{0,0};
 
-        //unsigned block_size = 50000;
-        //std::atomic<unsigned> num_sequences{0};
+    //unsigned block_size = 50000;
+    //std::atomic<unsigned> num_sequences{0};
 
-        std::vector<std::future<void>> threads;
+    std::vector<std::future<void>> threads;
 
-        // Find out number of processes
-        int num_procs;
-        MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
+    // Find out number of processes
+    int num_procs;
+    MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
 
-        //Gather number of items to receive from each rank
-        int recvcnts[num_procs];
-        int displs[num_procs];
-        //int num_items_to_send;
+    //Gather number of items to receive from each rank
+    int recvcnts[num_procs];
+    int displs[num_procs];
+    //int num_items_to_send;
 
-        unsigned queries_added = 0;
-        unsigned end_seq = startId + opt.queryLimit;
+    unsigned queries_added = 0;
+    unsigned end_seq = startId + opt.queryLimit;
+
+    // assign work to threads
+    int local_thread_id = 0;
+
+    for(int threadId = 0; threadId < opt.numThreads; ++threadId) {
+        threads.emplace_back(std::async(std::launch::async, [&] {
+            sequence_pair_reader reader{filename1, filename2};
+
+            int my_local_thread_id;
+
+            {
+                std::lock_guard<std::mutex> lock(tipMtx);
+                my_local_thread_id = local_thread_id;
+                //std::cout << "Starting thread" << my_local_thread_id <<std::endl;
+                local_thread_id++;
+            }
+
+            //const auto readSequentially = opt.perThreadSequentialQueries;
+
+            std::vector<sequence_pair_reader::sequence_pair> sequences;
+            //sequences.reserve(readSequentially);
+            reader.skip(startId);
+
+            match_locations matches;
+            match_target_locations matchesBuffer;
+            match_target_locations matchesBuffer2;
+
+            unsigned current_sequence = startId;
+
+            //while(reader.has_next() && queryLimit > 0 && num_sequences < block_size) {
+            while(reader.has_next() && queries_added < opt.queryLimit) {
+
+                //sequence_pair_reader::sequence_pair current_seq = reader.next();
+
+                if((current_sequence % opt.numThreads) == (unsigned)my_local_thread_id) {
+                    sequences.emplace_back(reader.next());
+                    {
+                        std::lock_guard<std::mutex> lock(addSeqMtx);
+                        queries_added++;
+                    }
+                }
+                else {
+                    reader.skip(1);
+                }
+
+                current_sequence++;
+
+                if(current_sequence >= end_seq) {
+                    break;
+                }
+
+
+            }
+
+            /*{
+                std::lock_guard<std::mutex> lock(writeoutMtx);
+                std::cout << "Number of sequences in thread " << my_local_thread_id << " rank " << my_id << " is "
+                          << sequences.size() << std::endl;
+            }*/
+
+            for(auto& seq : sequences) {
+                if(!seq.first.header.empty()) {
+                    //bufferEmpty = false;
+                    matchesBuffer.clear();
+                    std::vector<size_t> offsets{0};
+
+                    db.accumulate_matches(seq.first.data, matchesBuffer, offsets);
+                    db.accumulate_matches(seq.second.data, matchesBuffer, offsets);
+
+                    // Sort by tgt and win
+                    merge_sort(matchesBuffer, offsets, matchesBuffer2);
+
+                    {
+                        std::lock_guard<std::mutex> lock(results_mapMtx);
+
+                        sequence_query query = sequence_query{seq.first.index,
+                                                              seq.first.header,
+                                                              seq.first.data,
+                                                              seq.second.data};
+
+                        matches.clear();
+                        for(auto& m : matchesBuffer)
+                            matches.emplace_back(db.taxon_of_target(m.tgt), m.win);
+
+                        auto batchBuffer = getBuffer();
+                        classification_candidates cls = bufclass(batchBuffer, sequence_query{seq.first.index,
+                                                                                             std::move(seq.first.header),
+                                                                                             std::move(seq.first.data),
+                                                                                             std::move(seq.second.data)},
+                                                          matches);
+
+                        results_map[seq.first.index] = std::move(cls);//std::move(matches);
+                        sequences_map[seq.first.index] = std::move(query);
+                    }
+
+
+                }
+
+            }
+
+            sequences.clear();
+        })); //emplace
+    }
+
+    // wait for all threads to finish and catch exceptions
+    for(unsigned int threadId = 0; threadId < threads.size(); ++threadId) {
+        if(threads[threadId].valid()) {
+            try {
+                threads[threadId].get();
+            }
+            catch(file_access_error& e) {
+                if(threadId == 0) {
+                    log(std::string("FAIL: ") + e.what());
+                }
+            }
+            catch(std::exception& e) {
+                log(std::string("FAIL: ") + e.what());
+            }
+        }
+    }
+
+
+    qid += results_map.size();
+
+    auto current_seq = sequences_map.begin();
+
+    // First gather all data in rank 0
+    std::map<std::uint_least64_t, classification_candidates> all_results_map;
+
+    timer time;
+    if (my_id == 0) {
+        time.start();
+    }
+
+
+    for (auto item = results_map.begin(); (item != results_map.end()) &&
+                                          current_seq != sequences_map.end(); ++item, ++current_seq) {
+
+
+        unsigned num_items = item->second.size()*2;
+
+        MPI_Gather(&num_items, 1, MPI_UNSIGNED, recvcnts, 1, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+
+        unsigned total_items = 0;
+        //unsigned *items = nullptr;
+
+
+        unsigned *items_partial = (unsigned *) malloc(num_items * sizeof(unsigned));
+
+        // Store data to send
+        unsigned i = 0;
+        for(auto current_item = item->second.begin(); current_item  != item->second.end(); ++current_item) {
+
+            items_partial[i] = current_item->tax->id();
+            items_partial[i+1] = current_item->hits;
+            i+=2;
+
+        }
+
+        // Store items count and offsets
+        unsigned *received_locations = nullptr;
+
+        if (my_id == 0) {
+
+            for(int k = 0; k< num_procs; ++k) {
+                if (item == results_map.begin()) {
+                    std::cout << "Rec items " << recvcnts[k] << std::endl;
+                }
+
+                total_items += recvcnts[k];
+
+                if (k == 0) {
+                    displs[k] = 0;
+                }
+                else {
+                    displs[k] = displs[k-1] + recvcnts[k-1];
+                }
+            }
+
+            received_locations = (unsigned *) malloc(total_items * sizeof(unsigned));
+
+        }
+
+        // Gather all data
+        MPI_Gatherv(items_partial, num_items, MPI_UNSIGNED, received_locations, recvcnts, displs, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+
+        if (my_id == 0) {
+
+            classification_candidates cls;
+            candidate_generation_rules rules;
+
+            rules.mergeBelow    = opt_class.lowestRank;
+            rules.maxCandidates = opt_class.maxNumCandidatesPerQuery;
+            if ((item == results_map.begin())) {
+                std::cout << "GO FOR IT : " << std::endl;
+            }
+
+
+            for(unsigned j = 0; j< total_items; j+=2) {
+
+                match_candidate cand{db.taxon_with_id(received_locations[j]), received_locations[j+1]};
+                cls.insert(cand, db, rules);
+
+                if ((j == 0) && (item == results_map.begin())) {
+                    std::cout << "Found taxon : " << received_locations[j] << std::endl;
+                }
+
+            }
+
+            all_results_map[current_seq->first] = std::move(cls);
+
+        }
+
+        free(items_partial);
+
+        if (my_id == 0){
+
+            free(received_locations);
+        }
+
+    }
+
+    if (my_id == 0) {
+
+        time.stop();
+
+        std::cout << "Total time in message passing: " << time.seconds() << " s" << std::endl;
+
+
+        threads.clear();
+
         // assign work to threads
-        int local_thread_id = 0;
-        for(int threadId = 0; threadId < opt.numThreads; ++threadId) {
+        local_thread_id = 0;
+
+        for(int thread_id = 0; thread_id < opt.numThreads; ++thread_id) {
+
             threads.emplace_back(std::async(std::launch::async, [&] {
-                sequence_pair_reader reader{filename1, filename2};
+                bool bufferEmpty = true;
+                //std::cout << "Starting thread" << std::endl;
+                auto batchBuffer = getBuffer();
 
                 int my_local_thread_id;
 
@@ -311,91 +546,33 @@ query_id query_batched(
                     local_thread_id++;
                 }
 
-                //const auto readSequentially = opt.perThreadSequentialQueries;
+                int current_seq = 0;
 
-                std::vector<sequence_pair_reader::sequence_pair> sequences;
-                //sequences.reserve(readSequentially);
-                reader.skip(startId);
+                for(auto & current : all_results_map) {
 
-                match_locations matches;
-                match_target_locations matchesBuffer;
-                match_target_locations matchesBuffer2;
+                    //if(((current_seq % opt.numThreads) == my_local_thread_id) && (!current.second.empty())) {
+                    if(((current_seq % opt.numThreads) == my_local_thread_id)) {
+                        bufferEmpty = false;
 
-                unsigned current_sequence = startId;
-
-                //while(reader.has_next() && queryLimit > 0 && num_sequences < block_size) {
-                while(reader.has_next() && queries_added < opt.queryLimit) {
-
-                    //sequence_pair_reader::sequence_pair current_seq = reader.next();
-
-                    if((current_sequence % opt.numThreads) == (unsigned)my_local_thread_id) {
-                        sequences.emplace_back(reader.next());
-                        {
-                            std::lock_guard<std::mutex> lock(addSeqMtx);
-                            queries_added++;
-                        }
+                        update(batchBuffer,
+                           sequence_query{sequences_map[current.first].id,//current_seq->second.id,
+                                          sequences_map[current.first].header,//std::move(current_seq->second.header),
+                                          sequences_map[current.first].seq1, //std::move(current_seq->second.seq1),
+                                          sequences_map[current.first].seq2},//std::move(current_seq->second.seq2)},
+                           current.second );
+                        /*update(batchBuffer, sequences_map[current.first],
+                               current.second );*/
                     }
-                    else {
-                        reader.skip(1);
-                    }
-
-                    current_sequence++;
-
-                    if(current_sequence >= end_seq) {
-                        break;
-                    }
-
-
+                    current_seq++;
                 }
 
-                /*{
-                    std::lock_guard<std::mutex> lock(writeoutMtx);
-                    std::cout << "Number of sequences in thread " << my_local_thread_id << " rank " << my_id << " is "
-                              << sequences.size() << std::endl;
-                }*/
-
-                for(auto& seq : sequences) {
-                    if(!seq.first.header.empty()) {
-                        //bufferEmpty = false;
-                        matchesBuffer.clear();
-                        std::vector<size_t> offsets{0};
-
-                        db.accumulate_matches(seq.first.data, matchesBuffer, offsets);
-                        db.accumulate_matches(seq.second.data, matchesBuffer, offsets);
-
-                        // Sort by tgt and win
-                        merge_sort(matchesBuffer, offsets, matchesBuffer2);
-
-                        {
-                            std::lock_guard<std::mutex> lock(results_mapMtx);
-
-                            sequence_query query = sequence_query{seq.first.index,
-                                                                  seq.first.header,
-                                                                  seq.first.data,
-                                                                  seq.second.data};
-
-                            matches.clear();
-                            for(auto& m : matchesBuffer)
-                                matches.emplace_back(db.taxon_of_target(m.tgt), m.win);
-
-                            auto batchBuffer = getBuffer();
-                            classification_candidates cls = bufclass(batchBuffer, sequence_query{seq.first.index,
-                                                                                                 std::move(seq.first.header),
-                                                                                                 std::move(seq.first.data),
-                                                                                                 std::move(seq.second.data)},
-                                                              matches);
-
-                            results_map[seq.first.index] = std::move(cls);//std::move(matches);
-                            sequences_map[seq.first.index] = std::move(query);
-                        }
-
-
-                    }
-
+                if(!bufferEmpty) {
+                    std::lock_guard<std::mutex> lock(finalizeMtx);
+                    finalize(std::move(batchBuffer));
                 }
 
-                sequences.clear();
-            })); //emplace
+            }));
+
         }
 
         // wait for all threads to finish and catch exceptions
@@ -415,269 +592,15 @@ query_id query_batched(
             }
         }
 
-
-        qid += results_map.size();
-
-        //std::cout << "Number of items sent from " << my_id << " is: " << results_map.size() << "ID: " << sequences_map.begin()->second.id << ". First: " << sequences_map.begin()->first << ". Content: " << sequences_map.begin()->second.seq2 << std::endl;
-
-        //auto batchBuffer = getBuffer();
-        auto current_seq = sequences_map.begin();
-
-        //This way is working fine
-        /*
-        for (auto item = results_map.begin(); (item != results_map.end()) &&
-            current_seq != sequences_map.end(); ++item, ++current_seq) {
-
-
-            unsigned num_items = item->second.size()*2;
-
-            MPI_Gather(&num_items, 1, MPI_UNSIGNED, recvcnts, 1, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
-
-            unsigned total_items = 0;
-            //unsigned *items = nullptr;
-
-
-            unsigned *items_partial = (unsigned *)malloc(num_items* sizeof(unsigned));
-
-            unsigned i = 0;
-            for(auto current_item = item->second.begin(); current_item  != item->second.end(); ++current_item) {
-
-                items_partial[i] = current_item->tgt;
-                items_partial[i+1] = current_item->win;
-                i+=2;
-
-
-            }
-
-            //int displs[num_procs];
-            unsigned *received_locations = nullptr;
-
-            if (my_id == 0) {
-
-                for(int k = 0; k< num_procs; ++k) {
-                    total_items += recvcnts[k];
-
-                    if (k == 0) {
-                        displs[k] = 0;
-                    }
-                    else {
-                        displs[k] = displs[k-1] + recvcnts[k-1];
-                    }
-                }
-
-                received_locations = (unsigned *) malloc(total_items*sizeof(unsigned));
-
-            }
-
-            MPI_Gatherv(items_partial, num_items, MPI_UNSIGNED, received_locations, recvcnts, displs, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
-
-
-            if (my_id == 0) {
-                match_locations matches;
-
-                for(unsigned j = 0; j< total_items; j+=2) {
-
-                    matches.emplace_back(db.taxon_of_target(received_locations[j]), received_locations[j+1]);
-                }
-
-                update(batchBuffer,
-                       sequence_query{current_seq->second.id,
-                                      std::move(current_seq->second.header),
-                                      std::move(current_seq->second.seq1),
-                                      std::move(current_seq->second.seq2)},
-                       matches );
-
-                //std::cout << "Finalizing in " << my_id << " for seq " << current_seq->second.id <<std::endl;
-            }
-
-
-        }
-
-        if (my_id == 0) {
-            //std::cout << "Finalizing in " << my_id << std::endl;
-            finalize(std::move(batchBuffer));
-        }
-        */
-
-        // First gather all data in rank 0
-        std::map<std::uint_least64_t, classification_candidates> all_results_map;
-
-        for (auto item = results_map.begin(); (item != results_map.end()) &&
-                                              current_seq != sequences_map.end(); ++item, ++current_seq) {
-
-
-            unsigned num_items = item->second.size()*2;
-
-            MPI_Gather(&num_items, 1, MPI_UNSIGNED, recvcnts, 1, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
-
-            unsigned total_items = 0;
-            //unsigned *items = nullptr;
-
-
-            unsigned *items_partial = (unsigned *)malloc(num_items* sizeof(unsigned));
-
-            unsigned i = 0;
-            for(auto current_item = item->second.begin(); current_item  != item->second.end(); ++current_item) {
-
-                //items_partial[i] = current_item->tgt;
-                //items_partial[i+1] = current_item->win;
-                items_partial[i] = current_item->tax->id();
-                items_partial[i+1] = current_item->hits;
-                i+=2;
-
-
-            }
-
-            //int displs[num_procs];
-            unsigned *received_locations = nullptr;
-
-            if (my_id == 0) {
-
-                for(int k = 0; k< num_procs; ++k) {
-                    if (item == results_map.begin()) {
-                        std::cout << "Rec items " << recvcnts[k] << std::endl;
-                    }
-
-                    total_items += recvcnts[k];
-
-                    if (k == 0) {
-                        displs[k] = 0;
-                    }
-                    else {
-                        displs[k] = displs[k-1] + recvcnts[k-1];
-                    }
-                }
-
-                received_locations = (unsigned *) malloc(total_items*sizeof(unsigned));
-
-            }
-
-            MPI_Gatherv(items_partial, num_items, MPI_UNSIGNED, received_locations, recvcnts, displs, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
-
-
-            if (my_id == 0) {
-
-                classification_candidates cls;
-                candidate_generation_rules rules;
-
-                rules.mergeBelow    = opt_class.lowestRank;
-                rules.maxCandidates = opt_class.maxNumCandidatesPerQuery;
-
-                for(unsigned j = 0; j< total_items; j+=2) {
-                    match_candidate cand{db.taxon_with_id(received_locations[j]), received_locations[j+1]};
-                    cls.insert(cand, db, rules);
-
-                }
-
-                all_results_map[current_seq->first] = std::move(cls);
-
-
-                /*update(batchBuffer,
-                       sequence_query{current_seq->second.id,
-                                      std::move(current_seq->second.header),
-                                      std::move(current_seq->second.seq1),
-                                      std::move(current_seq->second.seq2)},
-                       matches );*/
-
-                //std::cout << "Finalizing in " << my_id << " for seq " << current_seq->second.id <<std::endl;
-            }
-
-
-            free(items_partial);
-            if (my_id == 0){
-
-                free(received_locations);
-            }
-
-        }
-
-        if (my_id == 0) {
-
-            //std::cout << "Number of items in results map: " << all_results_map.size() << std::endl;
-
-            //std::vector<std::future<void>> threads_finalize;
-            threads.clear();
-
-            // assign work to threads
-            int local_thread_id = 0;
-            for(int thread_id = 0; thread_id < opt.numThreads; ++thread_id) {
-                threads.emplace_back(std::async(std::launch::async, [&] {
-                    bool bufferEmpty = true;
-                    //std::cout << "Starting thread" << std::endl;
-                    auto batchBuffer = getBuffer();
-
-                    int my_local_thread_id;
-
-                    {
-                        std::lock_guard<std::mutex> lock(tipMtx);
-                        my_local_thread_id = local_thread_id;
-                        //std::cout << "Starting thread" << my_local_thread_id <<std::endl;
-                        local_thread_id++;
-                    }
-
-                    int current_seq = 0;
-
-                    for(auto & current : all_results_map) {
-
-                        //if(((current_seq % opt.numThreads) == my_local_thread_id) && (!current.second.empty())) {
-                        if(((current_seq % opt.numThreads) == my_local_thread_id)) {
-                            bufferEmpty = false;
-
-                            update(batchBuffer,
-                               sequence_query{sequences_map[current.first].id,//current_seq->second.id,
-                                              sequences_map[current.first].header,//std::move(current_seq->second.header),
-                                              sequences_map[current.first].seq1, //std::move(current_seq->second.seq1),
-                                              sequences_map[current.first].seq2},//std::move(current_seq->second.seq2)},
-                               current.second );
-                            /*update(batchBuffer, sequences_map[current.first],
-                                   current.second );*/
-                        }
-                        current_seq++;
-                    }
-
-                    if(!bufferEmpty) {
-                        std::lock_guard<std::mutex> lock(finalizeMtx);
-                        finalize(std::move(batchBuffer));
-                    }
-
-                }));
-
-            }
-
-            //}
-
-
-            //std::cout << "Finalizing in " << my_id << std::endl;
-
-
-            // wait for all threads to finish and catch exceptions
-            for(unsigned int threadId = 0; threadId < threads.size(); ++threadId) {
-                if(threads[threadId].valid()) {
-                    try {
-                        threads[threadId].get();
-                    }
-                    catch(file_access_error& e) {
-                        if(threadId == 0) {
-                            log(std::string("FAIL: ") + e.what());
-                        }
-                    }
-                    catch(std::exception& e) {
-                        log(std::string("FAIL: ") + e.what());
-                    }
-                }
-            }
-
-
-
-        }
-
-
-        all_results_map.clear();
-        sequences_map.clear();
-        results_map.clear();
-
-        return qid;
     }
+
+
+    all_results_map.clear();
+    sequences_map.clear();
+    results_map.clear();
+
+    return qid;
+}
 
 
 /*************************************************************************//**

@@ -642,7 +642,7 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
         }
 
-        std::uint32_t total_items_rec = 0;
+        std::uint64_t total_items_rec = 0;
 
 
         std::uint32_t displs[num_procs];
@@ -679,7 +679,8 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
         }
 
         MPI_Barrier(MPI_COMM_WORLD);
-        std::uint32_t *offset = items_size_total;
+        std::uint64_t offset = 0;
+        //std::uint32_t *offset = items_size_total;
 
         for(int j = 1; j< num_procs; ++j) {
 
@@ -698,7 +699,8 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
                  *
                  */
                 offset += recvcnts[j-1];
-                MPI_Recv(offset, (int)recvcnts[j], MPI_UINT32_T, j, j+num_procs, MPI_COMM_WORLD, &status);
+                //MPI_Recv(offset, (int)recvcnts[j], MPI_UINT32_T, j, j+num_procs, MPI_COMM_WORLD, &status);
+                MPI_Recv(&items_size_total[offset], (int)recvcnts[j], MPI_UINT32_T, j, j+num_procs, MPI_COMM_WORLD, &status);
                 cout << "[JMABUIN] At proc " << my_id << " :: After Recv from rank :: " << j << ". Offset: " << offset << endl;
             }
             else if (my_id == j) {
@@ -725,9 +727,11 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
         auto maxlpf = db.max_locations_per_feature() - 1;
         std::uint32_t total_to_delete;
 
+
         if (my_id == 0) {
+            cout << "Starting to group items " << endl;
             total_to_delete = 0;
-            for(std::uint32_t i = 0; i< total_items_rec; i+=2) {
+            for(std::uint64_t i = 0; i< total_items_rec; i+=2) {
 
                 if(items_map.find(items_size_total[i]) != items_map.end()) {
                     items_map[items_size_total[i]] = items_map[items_size_total[i]] + items_size_total[i+1];
@@ -759,7 +763,7 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
         items_to_delete = (std::uint32_t *) malloc(total_to_delete * sizeof(std::uint32_t));
 
         if (my_id == 0) {
-            unsigned k = 0;
+            std::uint32_t k = 0;
             for(auto current_item = items_map.begin(); current_item != items_map.end(); ++current_item) {
                 if (current_item->second > (std::uint32_t)maxlpf) {
                     items_to_delete[k] = current_item->first;

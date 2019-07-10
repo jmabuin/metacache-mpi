@@ -64,11 +64,20 @@ void process_input_files(const vector<string>& infiles,
     std::ostream* status       = &cerr;
 
     std::ofstream mapFile;
+
+    int my_id;
+
+    // Find out process rank
+    MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
+
     if(!queryMappingsFilename.empty()) {
         mapFile.open(queryMappingsFilename, std::ios::out);
 
         if(mapFile.good()) {
-            cout << "Per-Read mappings will be written to file: " << queryMappingsFilename << endl;
+            if (my_id == 0) {
+                cout << "Per-Read mappings will be written to file: " << queryMappingsFilename << endl;
+            }
+
             perReadOut = &mapFile;
             //default: auxiliary output same as mappings output
             perTargetOut = perReadOut;
@@ -114,9 +123,10 @@ void process_input_files(const vector<string>& infiles,
     results.flush_all_streams();
 
     // Find out process rank
-    int my_id;
-    MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
+    //int my_id;
+    //MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
 
+    MPI_Barrier(MPI_COMM_WORLD);
     results.time.start();
     map_queries_to_targets(infiles, db, opt, results);
     results.time.stop();
@@ -323,11 +333,18 @@ read_database(const string& filename, const database_query_options& opt)
              << opt.maxLoadFactor << endl;
     }
 
-    cerr << "Reading database from file '" << filename << "' ... " << flush;
+    // Find out process rank
+    int my_id = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
+    if (my_id == 0) {
+        cerr << "Reading database from file '" << filename << "' ... " << flush;
+    }
 
     try {
         db.read(filename);
-        cerr << "done." << endl;
+        if (my_id == 0) {
+            cerr << "done." << endl;
+        }
     }
     catch(const file_access_error& e) {
         cerr << "FAIL" << endl;
@@ -414,7 +431,10 @@ void main_mode_query(const args_parser& args)
     }
 
     if(!infiles.empty()) {
-        cerr << "Classifying query sequences." << endl;
+        if (my_id == 0) {
+            cerr << "Classifying query sequences." << endl;
+        }
+
 
         adapt_options_to_database(opt.classify, db);
         process_input_files(infiles, db, opt);

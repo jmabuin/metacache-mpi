@@ -461,9 +461,9 @@ query_id query_batched_parallel(
         if (my_id == 0) {
 
             for(int k = 0; k< num_procs; ++k) {
-                if (item == results_map.begin()) {
-                    std::cout << "Rec items " << recvcnts[k] << std::endl;
-                }
+                //if (item == results_map.begin()) {
+                //    std::cout << "Rec items " << recvcnts[k] << std::endl;
+                //}
 
                 total_items += recvcnts[k];
 
@@ -489,19 +489,15 @@ query_id query_batched_parallel(
 
             rules.mergeBelow    = opt_class.lowestRank;
             rules.maxCandidates = opt_class.maxNumCandidatesPerQuery;
-            if ((item == results_map.begin())) {
-                std::cout << "GO FOR IT : " << std::endl;
-            }
-
 
             for(unsigned j = 0; j< total_items; j+=2) {
 
                 match_candidate cand{db.taxon_with_id(received_locations[j]), received_locations[j+1]};
                 cls.insert(cand, db, rules);
 
-                if ((j == 0) && (item == results_map.begin())) {
-                    std::cout << "Found taxon : " << received_locations[j] << std::endl;
-                }
+                //if ((j == 0) && (item == results_map.begin())) {
+                //    std::cout << "Found taxon : " << received_locations[j] << std::endl;
+                //}
 
             }
 
@@ -762,7 +758,7 @@ void query_database(
             } else {
                 showInfo(fname1);
             }
-            showProgress(infilenames.size() > 1 ? i/float(infilenames.size()) : -1);
+            //showProgress(infilenames.size() > 1 ? i/float(infilenames.size()) : -1);
 
             sequence_pair_reader reader{fname1, fname2};
 

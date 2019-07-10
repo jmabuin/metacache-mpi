@@ -865,7 +865,7 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
     }
 
     cout << "[JMABUIN] Database wrote at proc " << my_id << endl;
-    //MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
     time.stop();
 
     if(notSilent) {

@@ -20,7 +20,7 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-file(GLOB sources  "src/*.h"  "src/*.cpp")
+file(GLOB sources  "src/*.h" "src/*.hpp"  "src/*.cpp")
 
 if(${MEDIUM_TARGETS})
     set(CMAKE_CXX_FLAGS "-DMC_TARGET_ID_TYPE=uint32_t -g -Wall -Wno-unused-function -DUSE_MALLOC_WRAPPERS")
@@ -38,11 +38,14 @@ endif(${MEDIUM_TARGETS})
 
 include_directories(${MPI_CXX_INCLUDE_DIRS})
 
+add_subdirectory(third-party/hopscotch-map)
+
 add_executable(metacache_mpi ${sources})
 
 target_link_libraries(metacache_mpi ${MPI_LIBRARIES})
 #target_link_libraries(metacache_mpi Threads::Threads)
 target_link_libraries(metacache_mpi ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(metacache_mpi tsl::hopscotch_map)
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory

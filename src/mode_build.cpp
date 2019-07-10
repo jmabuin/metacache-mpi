@@ -41,7 +41,7 @@
 #include "config.h"
 #include "sequence_io.h"
 #include "taxonomy_io.h"
-
+#include <tsl/hopscotch_map.h>
 
 namespace mc {
 
@@ -712,12 +712,13 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
             cout << "[JMABUIN] At proc " << my_id << " :: After Gatherv :: " << endl;
         }
 
-        std::unordered_map<std::uint32_t, std::uint32_t> items_map;
+
         std::uint32_t *items_to_delete = nullptr;
         auto maxlpf = db.max_locations_per_feature() - 1;
         std::uint32_t total_to_delete;
 
-
+        /*
+        std::unordered_map<std::uint32_t, std::uint32_t> items_map;
         if (my_id == 0) {
 
             timer timer_group;
@@ -754,7 +755,7 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
         }
 
-        free(items_size);
+         free(items_size);
 
         MPI_Bcast(&total_to_delete, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
         cout << "[JMABUIN] At proc " << my_id << " :: After Bcast1 :: Received: "<< total_to_delete << endl;
@@ -771,6 +772,69 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
             }
         }
+        */
+
+
+        tsl::hopscotch_map<std::uint32_t , std::uint32_t > items_map;
+
+        if (my_id == 0) {
+
+            timer timer_group;
+            timer_group.start();
+
+            cout << "Starting to group items " << endl;
+            total_to_delete = 0;
+            for(std::uint64_t i = 0; i< total_items_rec; i+=2) {
+
+                auto current_item = items_map.find(items_size_total[i]);
+                if(current_item != items_map.end()) {
+                    //items_map[items_size_total[i]] = items_map[items_size_total[i]] + items_size_total[i+1];
+                    current_item.value() += items_size_total[i+1];
+
+                }
+                else {
+                    //items_map.insert(std::pair<std::uint32_t, std::uint32_t>(items_size_total[i], items_size_total[i+1]));
+                    items_map.insert(std::make_pair(items_size_total[i], items_size_total[i+1]));
+                }
+            }
+
+            timer_group.stop();
+            cout << "Time involved in grouping items is: " << timer_group.seconds() << "s" << endl;
+
+            free(items_size_total);
+
+
+            for(auto current_item = items_map.begin(); current_item != items_map.end(); ++current_item) {
+                if (current_item.value() > (std::uint32_t)maxlpf) {
+                    total_to_delete++;
+                }
+
+            }
+
+        }
+
+        free(items_size);
+
+        MPI_Bcast(&total_to_delete, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
+        cout << "[JMABUIN] At proc " << my_id << " :: After Bcast1 :: Received: "<< total_to_delete << endl;
+
+        items_to_delete = (std::uint32_t *) malloc(total_to_delete * sizeof(std::uint32_t));
+
+        if (my_id == 0) {
+            std::uint32_t k = 0;
+            for(auto current_item = items_map.begin(); current_item != items_map.end(); ++current_item) {
+                if (current_item.value() > (std::uint32_t)maxlpf) {
+                    items_to_delete[k] = current_item.key();
+                    ++k;
+                }
+
+            }
+        }
+
+
+
+
+
 
         MPI_Barrier(MPI_COMM_WORLD);
         cout << "[JMABUIN] At proc " << my_id << " :: Before Bcast2 :: " << endl;

@@ -681,46 +681,36 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
         MPI_Barrier(MPI_COMM_WORLD);
         std::uint64_t offset = 0;
         //std::uint32_t *offset = items_size_total;
+        timer timer_messages;
+        if (my_id == 0) {
+            timer_messages.start();
+        }
 
         for(int j = 1; j< num_procs; ++j) {
 
             if (my_id == 0) {
 
-                /*
-                 * MPI_Recv(
-        void* data,
-        int count,
-        MPI_Datatype datatype,
-        int source,
-        int tag,
-        MPI_Comm communicator,
-        MPI_Status* status)
-
-                 *
-                 */
                 offset += recvcnts[j-1];
-                //MPI_Recv(offset, (int)recvcnts[j], MPI_UINT32_T, j, j+num_procs, MPI_COMM_WORLD, &status);
                 MPI_Recv(&items_size_total[offset], (int)recvcnts[j], MPI_UINT32_T, j, j+num_procs, MPI_COMM_WORLD, &status);
                 cout << "[JMABUIN] At proc " << my_id << " :: After Recv from rank :: " << j << ". Offset: " << offset << endl;
             }
             else if (my_id == j) {
-                /*
-                 * MPI_Send(
-        void* data,
-        int count,
-        MPI_Datatype datatype,
-        int destination,
-        int tag,
-        MPI_Comm communicator)
 
-                 */
                 MPI_Send(items_size, num_items_to_send, MPI_UINT32_T, 0, j+num_procs, MPI_COMM_WORLD);
                 cout << "[JMABUIN] At proc " << my_id << " :: After send from rank :: " << j << endl;
             }
 
         }
         MPI_Barrier(MPI_COMM_WORLD);
-        cout << "[JMABUIN] At proc " << my_id << " :: After Gatherv :: " << endl;
+
+        if (my_id == 0) {
+            timer_messages.stop();
+            cout << "[JMABUIN] At proc " << my_id << " :: After Gatherv :: Time:  " << timer_messages.seconds() << "s" << endl;
+        }
+
+        else {
+            cout << "[JMABUIN] At proc " << my_id << " :: After Gatherv :: " << endl;
+        }
 
         std::unordered_map<std::uint32_t, std::uint32_t> items_map;
         std::uint32_t *items_to_delete = nullptr;
@@ -729,19 +719,28 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
 
         if (my_id == 0) {
+
+            timer timer_group;
+            timer_group.start();
+
             cout << "Starting to group items " << endl;
             total_to_delete = 0;
             for(std::uint64_t i = 0; i< total_items_rec; i+=2) {
 
-                if(items_map.find(items_size_total[i]) != items_map.end()) {
-                    items_map[items_size_total[i]] = items_map[items_size_total[i]] + items_size_total[i+1];
+                auto current_item = items_map.find(items_size_total[i]);
+                if(current_item != items_map.end()) {
+                    //items_map[items_size_total[i]] = items_map[items_size_total[i]] + items_size_total[i+1];
+                    current_item->second = current_item->second + items_size_total[i+1];
 
                 }
                 else {
-                    items_map.insert(std::pair<std::uint32_t, std::uint32_t>(items_size_total[i], items_size_total[i+1]));
+                    //items_map.insert(std::pair<std::uint32_t, std::uint32_t>(items_size_total[i], items_size_total[i+1]));
+                    items_map.insert(std::make_pair(items_size_total[i], items_size_total[i+1]));
                 }
             }
 
+            timer_group.stop();
+            cout << "Time involved in grouping items is: " << timer_group.seconds() << "s" << endl;
 
             free(items_size_total);
 

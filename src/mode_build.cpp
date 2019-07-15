@@ -42,6 +42,7 @@
 #include "sequence_io.h"
 #include "taxonomy_io.h"
 #include <tsl/hopscotch_map.h>
+#include <future>
 
 namespace mc {
 
@@ -236,6 +237,131 @@ void rank_targets_with_mapping_file(database& db,
 }
 
 
+/*************************************************************************//**
+ *
+ * @brief Alternative way of providing taxonomic mappings in a multithread way.
+ *        The input file must be a text file with each line in the format:
+ *        accession  accession.version taxid gi
+ *        (like the NCBI's *.accession2version files)
+ *
+ *****************************************************************************/
+ //TODO: Not working!
+void rank_targets_with_mapping_file_multithread(database& db,
+                                    std::set<const taxon*>& targetTaxa,
+                                    const string& mappingFile,
+                                    int numThreads)
+{
+    if(targetTaxa.empty()) return;
+
+    std::vector<std::future<void>> threads;
+    std::mutex tipMtx;
+    std::mutex resetMtx;
+
+    std::ifstream is {mappingFile};
+    if(!is.good()) return;
+
+    const auto fsize = file_size(mappingFile);
+    //auto nextStatStep = fsize / 1000;
+    //auto nextStat = nextStatStep;
+
+    // Find out process rank
+    int my_id = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
+
+    bool showProgress = (fsize > 100000000) && (my_id == 0);
+
+    cout << "Try to map sequences to taxa in rank " << my_id << " using '" << mappingFile
+         << "' (" << std::max(std::streamoff(1),
+                              fsize/(1024*1024)) << " MB)" << endl;
+
+    if(showProgress) show_progress_indicator(cout, 0);
+
+    string acc;
+    string accver;
+    std::uint64_t taxid;
+    string gi;
+
+    //skip header
+    getline(is, acc);
+    acc.clear();
+
+
+    // assign work to threads
+    int local_thread_id = 0;
+
+    for(int threadId = 0; threadId < numThreads; ++threadId) {
+        threads.emplace_back(std::async(std::launch::async, [&] {
+
+
+            std::uint64_t  my_local_thread_id;
+
+            {
+                std::lock_guard<std::mutex> lock(tipMtx);
+                my_local_thread_id = (std::uint64_t)local_thread_id;
+                //std::cout << "Starting thread" << my_local_thread_id <<std::endl;
+                local_thread_id++;
+            }
+
+
+            std::uint64_t current_line = 0;
+
+            while(is >> acc >> accver >> taxid >> gi) {
+
+                if ((current_line % (std::uint64_t)numThreads) == my_local_thread_id) {
+                    const taxon* tax = db.taxon_with_name(accver);
+
+                    if(!tax) {
+                        tax = db.taxon_with_similar_name(acc);
+                        if(!tax) tax = db.taxon_with_name(gi);
+                    }
+
+                    //if in database then set parent
+                    if(tax) {
+
+                        std::lock_guard<std::mutex> lock(resetMtx);
+                        auto i = targetTaxa.find(tax);
+                        if(i != targetTaxa.end()) {
+
+                            db.reset_parent(*tax, taxid);
+                            targetTaxa.erase(i);
+                        }
+
+                        if(targetTaxa.empty()) break;
+                    }
+
+
+
+                }
+
+                ++current_line;
+            }
+
+        }));
+    }
+
+
+    // wait for all threads to finish and catch exceptions
+    for(unsigned int threadId = 0; threadId < threads.size(); ++threadId) {
+        if(threads[threadId].valid()) {
+            try {
+                threads[threadId].get();
+            }
+            catch(file_access_error& e) {
+                if(threadId == 0) {
+                    std::cerr << "FAIL: " << e.what();
+                }
+            }
+            catch(std::exception& e) {
+                std::cerr << "FAIL: " << e.what();
+            }
+        }
+    }
+
+    is.close();
+
+}
+
+
 
 /*************************************************************************//**
  *
@@ -296,6 +422,7 @@ void try_to_rank_unranked_targets(database& db, const build_options& opt, int my
 
         for(const auto& file : opt.taxonomy.mappingPostFiles) {
             rank_targets_with_mapping_file(db, unranked, file);
+            //rank_targets_with_mapping_file_multithread(db, unranked, file, 2);
             if(unranked.empty()) break;
         }
     }

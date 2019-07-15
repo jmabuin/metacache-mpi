@@ -650,7 +650,7 @@ struct mappings_buffer
  *        try to map each read to a taxon with the lowest possible rank
  *
  *****************************************************************************/
-void map_queries_to_targets_default(
+void map_queries_to_targets_parallel(
     const vector<string>& infiles,
     const database& db, const query_options& opt,
     classification_results& results)
@@ -670,8 +670,8 @@ void map_queries_to_targets_default(
     const auto makeBatchBuffer = [] { return mappings_buffer(); };
 
     //updates buffer with the database answer of a single query
-    const auto get_classification = [&] (mappings_buffer& buf,
-                                   sequence_query&& query, match_locations& allhits)
+    const auto get_classification = [&] (sequence_query&& query,
+            match_locations& allhits)
     {
 
         prepare_evaluation(db, opt.evaluate, query, allhits);
@@ -724,6 +724,12 @@ void map_queries_to_targets_default(
         }
         //write output buffer to output stream when batch is finished
         results.perReadOut << buf.out.str();
+
+
+        buf.hitsPerTarget.clear();
+        taxon_count_map().swap(buf.taxCounts);
+        buf.taxCounts.clear();
+        buf.out.clear();
     };
 
     //runs if something needs to be appended to the output
@@ -760,7 +766,101 @@ void map_queries_to_targets_default(
 
 }
 
+/*************************************************************************//**
+ *
+ * @brief default classification scheme with
+ *        additional target->hits list generation and output
+ *        try to map each read to a taxon with the lowest possible rank
+ *
+ *****************************************************************************/
+void map_queries_to_targets_default(
+        const vector<string>& infiles,
+        const database& db, const query_options& opt,
+        classification_results& results)
+{
+    //global target -> query_id/win:hits... list
+    matches_per_target tgtMatches;
+    //global taxon -> read count
+    taxon_count_map allTaxCounts;
 
+    //input queries are divided into batches;
+    //each batch might be processed by a different thread;
+    //the following 4 lambdas define actions that should be performed
+    //on such a batch and its associated buffer;
+    //the batch buffer can be used to cache intermediate results
+
+    //creates an empty batch buffer
+    const auto makeBatchBuffer = [] { return mappings_buffer(); };
+
+
+    //updates buffer with the database answer of a single query
+    const auto processQuery = [&] (mappings_buffer& buf,
+                                   sequence_query&& query, match_locations& allhits)
+    {
+        if(query.empty()) return;
+
+        prepare_evaluation(db, opt.evaluate, query, allhits);
+
+        auto cls = classify(db, opt.classify, query, allhits);
+
+        if(opt.output.showHitsPerTargetList) {
+            //insert all candidates with at least 'hitsMin' hits into
+            //target -> match list
+            buf.hitsPerTarget.insert(query.id, allhits, cls.candidates,
+                                     opt.classify.hitsMin);
+        }
+
+        if(opt.output.makeTaxCounts && cls.best) {
+            ++buf.taxCounts[cls.best];
+        }
+
+        evaluate_classification(db, opt.evaluate, query, cls, results.statistics);
+
+        show_query_mapping(buf.out, db, opt.output, query, cls, allhits);
+    };
+
+    //runs before a batch buffer is discarded
+    const auto finalizeBatch = [&] (mappings_buffer&& buf) {
+        if(opt.output.showHitsPerTargetList) {
+            //merge batch (target->hits) lists into global one
+            tgtMatches.merge(std::move(buf.hitsPerTarget));
+        }
+        if(opt.output.makeTaxCounts) {
+            //add batch (taxon->read count) to global counts
+            for(const auto& taxCount : buf.taxCounts)
+                allTaxCounts[taxCount.first] += taxCount.second;
+        }
+        //write output buffer to output stream when batch is finished
+        results.perReadOut << buf.out.str();
+    };
+
+    //runs if something needs to be appended to the output
+    const auto appendToOutput = [&] (const std::string& msg) {
+        results.perReadOut << opt.output.format.comment << msg << '\n';
+    };
+
+    //run (parallel) database queries according to processing options
+    query_database(infiles, db, opt.process,
+                   makeBatchBuffer, processQuery, finalizeBatch,
+                   appendToOutput);
+
+    if(opt.output.showHitsPerTargetList) {
+        tgtMatches.sort_match_lists();
+        show_matches_per_targets(results.perTargetOut, db, tgtMatches, opt.output);
+    }
+
+    if(opt.output.showTaxAbundances) {
+        show_abundances(results.perTaxonOut, allTaxCounts,
+                        results.statistics.total(), opt.output);
+    }
+
+    if(opt.output.showAbundanceEstimatesOnRank != taxonomy::rank::none) {
+        estimate_abundance(db, allTaxCounts, opt.output.showAbundanceEstimatesOnRank);
+
+        show_abundance_estimates(results.perTaxonOut, allTaxCounts,
+                                 results.statistics.total(), opt.output);
+    }
+}
 
 /*************************************************************************//**
  *
@@ -776,7 +876,7 @@ void map_queries_to_targets(const vector<string>& infiles,
         show_query_mapping_header(results.perReadOut, opt.output);
     }
 
-    map_queries_to_targets_default(infiles, db, opt, results);
+    map_queries_to_targets_parallel(infiles, db, opt, results);
 }
 
 

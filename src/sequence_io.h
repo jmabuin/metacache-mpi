@@ -74,6 +74,7 @@ public:
     /** @brief skip n sequences */
     void skip(index_type n);
 
+    //void close();
     bool has_next() const noexcept { return valid_.load(); }
 
     index_type index() const noexcept { return index_.load(); }
@@ -82,6 +83,8 @@ public:
 
     void seek(std::streampos pos) { do_seek(pos); }
     std::streampos tell()         { return do_tell(); }
+
+    void close() { do_close(); }
 
 protected:
     void invalidate() { valid_.store(false); }
@@ -94,6 +97,8 @@ protected:
     virtual void read_next(sequence&) = 0;
 
     virtual void skip_next() = 0;
+
+    virtual void do_close() = 0;
 
 private:
     mutable std::mutex mutables_;
@@ -121,6 +126,7 @@ protected:
     void do_seek(std::streampos) override;
     void read_next(sequence&) override;
     void skip_next() override;
+    void do_close();
 
 private:
     std::ifstream file_;
@@ -148,6 +154,7 @@ protected:
     void do_seek(std::streampos) override;
     void read_next(sequence&) override;
     void skip_next() override;
+    void do_close();
 
 private:
     std::ifstream file_;
@@ -224,6 +231,7 @@ public:
     void seek(const stream_positions& pos);
     stream_positions tell();
 
+    void close();
 
 private:
     mutable std::mutex mutables_;

@@ -169,7 +169,10 @@ void fasta_reader::read_next(sequence& seq)
     }
 }
 
+void fasta_reader::do_close() {
 
+    file_.close();
+}
 
 //-------------------------------------------------------------------
 void fasta_reader::skip_next()
@@ -241,6 +244,10 @@ fastq_reader::fastq_reader(const string& filename):
 }
 
 
+void fastq_reader::do_close() {
+
+    file_.close();
+}
 
 //-------------------------------------------------------------------
 void fastq_reader::read_next(sequence& seq)
@@ -413,8 +420,11 @@ sequence_pair_reader::sequence_pair_reader(const std::string& filename1,
     }
 }
 
+void sequence_pair_reader::close() {
 
-
+    reader1_->close();
+    reader2_->close();
+}
 //-------------------------------------------------------------------
 bool sequence_pair_reader::has_next() const noexcept
 {

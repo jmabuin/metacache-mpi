@@ -42,6 +42,7 @@
 #include "sequence_io.h"
 #include "taxonomy_io.h"
 #include <tsl/hopscotch_map.h>
+#include <tsl/hopscotch_set.h>
 #include <future>
 
 namespace mc {
@@ -236,6 +237,79 @@ void rank_targets_with_mapping_file(database& db,
     if(showProgress) clear_current_line(cout);
 }
 
+/*************************************************************************//**
+ *
+ * @brief Alternative way of providing taxonomic mappings.
+ *        The input file must be a text file with each line in the format:
+ *        accession  accession.version taxid gi
+ *        (like the NCBI's *.accession2version files)
+ *
+ *****************************************************************************/
+    void rank_targets_with_mapping_file_hopscotch(database& db,
+                                                  tsl::hopscotch_set<const taxon*>& targetTaxa,
+                                        const string& mappingFile)
+    {
+        if(targetTaxa.empty()) return;
+
+        std::ifstream is {mappingFile};
+        if(!is.good()) return;
+
+        const auto fsize = file_size(mappingFile);
+        auto nextStatStep = fsize / 1000;
+        auto nextStat = nextStatStep;
+
+        // Find out process rank
+        int my_id = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
+
+        bool showProgress = (fsize > 100000000) && (my_id == 0);
+
+        cout << "Try to map sequences to taxa in rank " << my_id << " using '" << mappingFile
+             << "' (" << std::max(std::streamoff(1),
+                                  fsize/(1024*1024)) << " MB)" << endl;
+
+        if(showProgress) show_progress_indicator(cout, 0);
+
+        string acc;
+        string accver;
+        std::uint64_t taxid;
+        string gi;
+
+        //skip header
+        getline(is, acc);
+        acc.clear();
+
+        while(is >> acc >> accver >> taxid >> gi) {
+            //target in database?
+            //accession.version is the default
+            const taxon* tax = db.taxon_with_name(accver);
+
+            if(!tax) {
+                tax = db.taxon_with_similar_name(acc);
+                if(!tax) tax = db.taxon_with_name(gi);
+            }
+
+            //if in database then set parent
+            if(tax) {
+                auto i = targetTaxa.find(tax);
+                if(i != targetTaxa.end()) {
+                    db.reset_parent(*tax, taxid);
+                    targetTaxa.erase(i);
+                    if(targetTaxa.empty()) break;
+                }
+            }
+
+            if(showProgress) {
+                auto pos = is.tellg();
+                if(pos >= nextStat) {
+                    show_progress_indicator(cout, pos / float(fsize));
+                    nextStat = pos + nextStatStep;
+                }
+            }
+        }
+
+        if(showProgress) clear_current_line(cout);
+    }
 
 /*************************************************************************//**
  *
@@ -381,6 +455,16 @@ unranked_targets(const database& db)
 }
 
 
+tsl::hopscotch_set<const taxon*> unranked_targets_hopscotch(const database& db) {
+    auto res = tsl::hopscotch_set<const taxon*>{};
+
+    for(const auto& tax : db.target_taxa()) {
+        if(!tax.has_parent()) res.insert(&tax);
+    }
+
+    return res;
+}
+
 
 /*************************************************************************//**
  *
@@ -408,11 +492,9 @@ all_targets(const database& db)
  *****************************************************************************/
 void try_to_rank_unranked_targets(database& db, const build_options& opt, int my_id = 0)
 {
-    std::set<const taxon*> unranked;
-    if(opt.resetParents)
-        unranked = all_targets(db);
-    else
-        unranked = unranked_targets(db);
+    tsl::hopscotch_set<const taxon*> unranked;
+
+    unranked = unranked_targets_hopscotch(db);
 
     if(!unranked.empty()) {
         if((opt.infoLevel != info_level::silent) && (my_id == 0)) {
@@ -421,13 +503,13 @@ void try_to_rank_unranked_targets(database& db, const build_options& opt, int my
         }
 
         for(const auto& file : opt.taxonomy.mappingPostFiles) {
-            rank_targets_with_mapping_file(db, unranked, file);
+            rank_targets_with_mapping_file_hopscotch(db, unranked, file);
             //rank_targets_with_mapping_file_multithread(db, unranked, file, 2);
             if(unranked.empty()) break;
         }
     }
 
-    unranked = unranked_targets(db);
+    unranked = unranked_targets_hopscotch(db);
     if(opt.infoLevel != info_level::silent) {
         if(unranked.empty()) {
             cout << "All targets are ranked." << endl;
@@ -666,13 +748,15 @@ void post_process_features(database& db, const build_options& opt)
     void post_process_features_distributed(database& db, const build_options& opt, std::uint32_t overpopulated_keys[], std::uint32_t num_overpopulated_keys)
     {
         const bool notSilent = opt.infoLevel != info_level::silent;
+        int my_id = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
 
         if(opt.removeOverpopulatedFeatures) {
 
             auto rem = db.remove_features_with_more_locations_than_distributed(overpopulated_keys, num_overpopulated_keys);
 
             if(notSilent) {
-                cout << rem << " features removed." << endl;
+                cout << rem << " features removed in rank " << my_id << endl;
             }
 
         }
@@ -735,17 +819,27 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
     }
 
+    timer time_rank_unranked;
+    if (my_id == 0) {
+        time_rank_unranked.start();
+    }
+
     try_to_rank_unranked_targets(db, opt, my_id);
 
-    cout << "[JMABUIN] Waiting at proc " << my_id  << endl;
+
+    if (my_id == 0) {
+        time_rank_unranked.stop();
+        std::cout << "Time in rank unranked: " << time_rank_unranked.seconds() << "s." << std::endl;
+    }
+    //cout << "[JMABUIN] Waiting at proc " << my_id  << endl;
     MPI_Barrier(MPI_COMM_WORLD);
 
     if(opt.removeOverpopulatedFeatures) {
-        cout << "[JMABUIN] At proc " << my_id << " :: Before Creating array :: " << endl;
+        //cout << "[JMABUIN] At proc " << my_id << " :: Before Creating array :: " << endl;
 
         // Obtain features and number of items from all ranks
         std::uint32_t *items_size = (std::uint32_t *) malloc(db.feature_count() * 2 * sizeof(std::uint32_t));
-        cout << "[JMABUIN] At proc " << my_id << " :: Before get_keys_num_items :: " << endl;
+        //cout << "[JMABUIN] At proc " << my_id << " :: Before get_keys_num_items :: " << endl;
         db.get_keys_num_items(items_size);
 
         //Gather number of items to receive from each rank
@@ -754,23 +848,22 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
         num_items_to_send = db.feature_count() * 2;
 
-        cout << "[JMABUIN] At proc " << my_id << " :: Before Gather :: " << num_items_to_send << endl;
+        //cout << "[JMABUIN] At proc " << my_id << " :: Before Gather :: " << num_items_to_send << endl;
 
         MPI_Gather(&num_items_to_send, 1, MPI_UINT32_T, recvcnts, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
 
-        cout << "[JMABUIN] At proc " << my_id << " :: After Gather :: Sent: " <<num_items_to_send << endl;
+        //cout << "[JMABUIN] At proc " << my_id << " :: After Gather :: Sent: " <<num_items_to_send << endl;
 
         if (my_id == 0) {
 
             for(int i = 0; i< num_procs; ++i) {
-                cout << "[JMABUIN] At proc " << my_id << " :: received: " <<recvcnts[i] << endl;
+                cout << "Rank " << my_id << " items received from " << num_procs << ": " <<recvcnts[i] << endl;
 
             }
 
         }
 
         std::uint64_t total_items_rec = 0;
-
 
         std::uint32_t displs[num_procs];
         std::uint32_t *items_size_total = nullptr;
@@ -791,7 +884,7 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
             items_size_total = (std::uint32_t *) malloc(total_items_rec * sizeof(std::uint32_t));
 
         }
-        cout << "[JMABUIN] At proc " << my_id << " :: Before Gatherv :: " << endl;
+        //cout << "[JMABUIN] At proc " << my_id << " :: Before Gatherv :: " << endl;
 
         //https://blogs.cisco.com/performance/can-i-mpi_send-and-mpi_recv-with-a-count-larger-than-2-billion
         //MPI_Gatherv(items_size, num_items_to_send, MPI_UNSIGNED, items_size_total, recvcnts, displs, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
@@ -802,7 +895,7 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
             memcpy(items_size_total, items_size, num_items_to_send * sizeof(std::uint32_t));
 
-            cout << "[JMABUIN] At proc " << my_id << " :: After memcpy :: " << endl;
+            //cout << "[JMABUIN] At proc " << my_id << " :: After memcpy :: " << endl;
         }
 
         MPI_Barrier(MPI_COMM_WORLD);
@@ -819,12 +912,12 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
                 offset += recvcnts[j-1];
                 MPI_Recv(&items_size_total[offset], (int)recvcnts[j], MPI_UINT32_T, j, j+num_procs, MPI_COMM_WORLD, &status);
-                cout << "[JMABUIN] At proc " << my_id << " :: After Recv from rank :: " << j << ". Offset: " << offset << endl;
+                cout << "Rank " << my_id << " Recv from rank " << j << ". Offset: " << offset << endl;
             }
             else if (my_id == j) {
 
                 MPI_Send(items_size, num_items_to_send, MPI_UINT32_T, 0, j+num_procs, MPI_COMM_WORLD);
-                cout << "[JMABUIN] At proc " << my_id << " :: After send from rank :: " << j << endl;
+                //cout << "[JMABUIN] At proc " << my_id << " :: After send from rank :: " << j << endl;
             }
 
         }
@@ -832,12 +925,9 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
         if (my_id == 0) {
             timer_messages.stop();
-            cout << "[JMABUIN] At proc " << my_id << " :: After Gatherv :: Time:  " << timer_messages.seconds() << "s" << endl;
+            cout << "Rank " << my_id << ". After gather data. Time:  " << timer_messages.seconds() << "s" << endl;
         }
 
-        else {
-            cout << "[JMABUIN] At proc " << my_id << " :: After Gatherv :: " << endl;
-        }
 
 
         std::uint32_t *items_to_delete = nullptr;
@@ -943,7 +1033,7 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
         free(items_size);
 
         MPI_Bcast(&total_to_delete, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
-        cout << "[JMABUIN] At proc " << my_id << " :: After Bcast1 :: Received: "<< total_to_delete << endl;
+        //cout << "[JMABUIN] At proc " << my_id << " :: After Bcast1 :: Received: "<< total_to_delete << endl;
 
         items_to_delete = (std::uint32_t *) malloc(total_to_delete * sizeof(std::uint32_t));
 
@@ -959,20 +1049,18 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
         }
 
 
-
-
-
-
         MPI_Barrier(MPI_COMM_WORLD);
-        cout << "[JMABUIN] At proc " << my_id << " :: Before Bcast2 :: " << endl;
+        //cout << "[JMABUIN] At proc " << my_id << " :: Before Bcast2 :: " << endl;
         MPI_Bcast(items_to_delete, total_to_delete, MPI_UINT32_T, 0, MPI_COMM_WORLD);
 
         post_process_features_distributed(db, opt, items_to_delete, total_to_delete);
 
         MPI_Barrier(MPI_COMM_WORLD);
-        cout << "[JMABUIN] Post processed features at proc " << my_id << " :: Now writing database :: " << endl;
+        //cout << "[JMABUIN] Post processed features at proc " << my_id << " :: Now writing database :: " << endl;
     }
 
+    timer time_write;
+    time_write.start();
 
     string mpi_file_name;
     std::stringstream mpi_file_name_stream;
@@ -985,13 +1073,15 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
     try {
         db.write(mpi_file_name);
         if(notSilent) cout << "done." << endl;
+        time_write.stop();
+        std::cout << "Write time in rank " << my_id << " is " << time_write.seconds() << "s." << std::endl;
     }
     catch(const file_access_error&) {
         if(notSilent) cout << "FAIL" << endl;
         cerr << "Could not write database file!" << endl;
     }
 
-    cout << "[JMABUIN] Database wrote at proc " << my_id << endl;
+    //cout << "[JMABUIN] Database wrote at proc " << my_id << endl;
     MPI_Barrier(MPI_COMM_WORLD);
     time.stop();
 

@@ -726,7 +726,7 @@ void map_queries_to_targets_parallel(
         results.perReadOut << buf.out.str();
 
 
-        buf.hitsPerTarget.clear();
+        //buf.hitsPerTarget.clear();
         taxon_count_map().swap(buf.taxCounts);
         buf.taxCounts.clear();
         buf.out.clear();

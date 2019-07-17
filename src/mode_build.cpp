@@ -834,13 +834,16 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
     //cout << "[JMABUIN] Waiting at proc " << my_id  << endl;
     MPI_Barrier(MPI_COMM_WORLD);
 
+
+    // TODO: This could be improved. Instead of send/recv from processes to rank 0 perform some
+    // kind of distribution by key, then group, send to rank 0 and broadcast
     if(opt.removeOverpopulatedFeatures) {
-        //cout << "[JMABUIN] At proc " << my_id << " :: Before Creating array :: " << endl;
 
         // Obtain features and number of items from all ranks
         std::uint32_t *items_size = (std::uint32_t *) malloc(db.feature_count() * 2 * sizeof(std::uint32_t));
-        //cout << "[JMABUIN] At proc " << my_id << " :: Before get_keys_num_items :: " << endl;
         db.get_keys_num_items(items_size);
+
+        tsl::hopscotch_map<std::uint32_t , std::uint32_t > items_map;
 
         //Gather number of items to receive from each rank
         std::uint32_t recvcnts[num_procs];
@@ -848,179 +851,91 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
         num_items_to_send = db.feature_count() * 2;
 
-        //cout << "[JMABUIN] At proc " << my_id << " :: Before Gather :: " << num_items_to_send << endl;
-
         MPI_Gather(&num_items_to_send, 1, MPI_UINT32_T, recvcnts, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
 
-        //cout << "[JMABUIN] At proc " << my_id << " :: After Gather :: Sent: " <<num_items_to_send << endl;
-
-        if (my_id == 0) {
-
-            for(int i = 0; i< num_procs; ++i) {
-                cout << "Rank " << my_id << " items received from " << num_procs << ": " <<recvcnts[i] << endl;
-
-            }
-
-        }
-
-        std::uint64_t total_items_rec = 0;
-
-        std::uint32_t displs[num_procs];
         std::uint32_t *items_size_total = nullptr;
-
-        if (my_id == 0) {
-
-            for(int i = 0; i< num_procs; ++i) {
-                total_items_rec += recvcnts[i];
-
-                if (i == 0) {
-                    displs[i] = 0;
-                }
-                else {
-                    displs[i] = displs[i-1] + recvcnts[i-1];
-                }
-            }
-
-            items_size_total = (std::uint32_t *) malloc(total_items_rec * sizeof(std::uint32_t));
-
-        }
-        //cout << "[JMABUIN] At proc " << my_id << " :: Before Gatherv :: " << endl;
 
         //https://blogs.cisco.com/performance/can-i-mpi_send-and-mpi_recv-with-a-count-larger-than-2-billion
         //MPI_Gatherv(items_size, num_items_to_send, MPI_UNSIGNED, items_size_total, recvcnts, displs, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
 
         MPI_Status status;
+        timer timer_messages;
 
         if (my_id == 0) {
+            //memcpy(items_size_total, items_size, num_items_to_send * sizeof(std::uint32_t));
 
-            memcpy(items_size_total, items_size, num_items_to_send * sizeof(std::uint32_t));
+            timer_messages.start();
 
-            //cout << "[JMABUIN] At proc " << my_id << " :: After memcpy :: " << endl;
+            for(unsigned k = 0; k< recvcnts[0]; k+=2) {
+                auto current_item = items_map.find(items_size[k]);
+                if(current_item != items_map.end()) {
+                    //items_map[items_size_total[i]] = items_map[items_size_total[i]] + items_size_total[i+1];
+                    current_item.value() += items_size[k+1];
+
+                }
+                else {
+                    //items_map.insert(std::pair<std::uint32_t, std::uint32_t>(items_size_total[i], items_size_total[i+1]));
+                    items_map.insert(std::make_pair(items_size[k], items_size[k+1]));
+                }
+            }
+
+            free(items_size);
         }
 
         MPI_Barrier(MPI_COMM_WORLD);
-        std::uint64_t offset = 0;
-        //std::uint32_t *offset = items_size_total;
-        timer timer_messages;
-        if (my_id == 0) {
-            timer_messages.start();
-        }
 
         for(int j = 1; j< num_procs; ++j) {
 
             if (my_id == 0) {
 
-                offset += recvcnts[j-1];
-                MPI_Recv(&items_size_total[offset], (int)recvcnts[j], MPI_UINT32_T, j, j+num_procs, MPI_COMM_WORLD, &status);
-                cout << "Rank " << my_id << " Recv from rank " << j << ". Offset: " << offset << endl;
+                items_size_total = (std::uint32_t *) malloc(recvcnts[j] * sizeof(std::uint32_t));
+                MPI_Recv(items_size_total, (int)recvcnts[j], MPI_UINT32_T, j, j+num_procs, MPI_COMM_WORLD, &status);
+                cout << "Rank " << my_id << " Recv from rank " << j << ". Offset: " << recvcnts[j] << endl;
+
+                for(unsigned k = 0; k< recvcnts[j]; k+=2) {
+                    auto current_item = items_map.find(items_size_total[k]);
+                    if(current_item != items_map.end()) {
+                        //items_map[items_size_total[i]] = items_map[items_size_total[i]] + items_size_total[i+1];
+                        current_item.value() += items_size_total[k+1];
+
+                    }
+                    else {
+                        //items_map.insert(std::pair<std::uint32_t, std::uint32_t>(items_size_total[i], items_size_total[i+1]));
+                        items_map.insert(std::make_pair(items_size_total[k], items_size_total[k+1]));
+                    }
+                }
+
+                free(items_size_total);
+
+
             }
             else if (my_id == j) {
 
                 MPI_Send(items_size, num_items_to_send, MPI_UINT32_T, 0, j+num_procs, MPI_COMM_WORLD);
-                //cout << "[JMABUIN] At proc " << my_id << " :: After send from rank :: " << j << endl;
             }
 
         }
+
+        if (my_id != 0) {
+            free(items_size);
+        }
+
+
         MPI_Barrier(MPI_COMM_WORLD);
 
         if (my_id == 0) {
             timer_messages.stop();
-            cout << "Rank " << my_id << ". After gather data. Time:  " << timer_messages.seconds() << "s" << endl;
+            cout << "Rank " << my_id << ". After gather and group data. Time:  " << timer_messages.seconds() << "s" << endl;
         }
-
-
 
         std::uint32_t *items_to_delete = nullptr;
         auto maxlpf = db.max_locations_per_feature() - 1;
         std::uint32_t total_to_delete;
 
-        /*
-        std::unordered_map<std::uint32_t, std::uint32_t> items_map;
+
         if (my_id == 0) {
 
-            timer timer_group;
-            timer_group.start();
-
-            cout << "Starting to group items " << endl;
             total_to_delete = 0;
-            for(std::uint64_t i = 0; i< total_items_rec; i+=2) {
-
-                auto current_item = items_map.find(items_size_total[i]);
-                if(current_item != items_map.end()) {
-                    //items_map[items_size_total[i]] = items_map[items_size_total[i]] + items_size_total[i+1];
-                    current_item->second = current_item->second + items_size_total[i+1];
-
-                }
-                else {
-                    //items_map.insert(std::pair<std::uint32_t, std::uint32_t>(items_size_total[i], items_size_total[i+1]));
-                    items_map.insert(std::make_pair(items_size_total[i], items_size_total[i+1]));
-                }
-            }
-
-            timer_group.stop();
-            cout << "Time involved in grouping items is: " << timer_group.seconds() << "s" << endl;
-
-            free(items_size_total);
-
-
-            for(auto current_item = items_map.begin(); current_item != items_map.end(); ++current_item) {
-                if (current_item->second > (std::uint32_t)maxlpf) {
-                    total_to_delete++;
-                }
-
-            }
-
-        }
-
-         free(items_size);
-
-        MPI_Bcast(&total_to_delete, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
-        cout << "[JMABUIN] At proc " << my_id << " :: After Bcast1 :: Received: "<< total_to_delete << endl;
-
-        items_to_delete = (std::uint32_t *) malloc(total_to_delete * sizeof(std::uint32_t));
-
-        if (my_id == 0) {
-            std::uint32_t k = 0;
-            for(auto current_item = items_map.begin(); current_item != items_map.end(); ++current_item) {
-                if (current_item->second > (std::uint32_t)maxlpf) {
-                    items_to_delete[k] = current_item->first;
-                    ++k;
-                }
-
-            }
-        }
-        */
-
-
-        tsl::hopscotch_map<std::uint32_t , std::uint32_t > items_map;
-
-        if (my_id == 0) {
-
-            timer timer_group;
-            timer_group.start();
-
-            cout << "Starting to group items " << endl;
-            total_to_delete = 0;
-            for(std::uint64_t i = 0; i< total_items_rec; i+=2) {
-
-                auto current_item = items_map.find(items_size_total[i]);
-                if(current_item != items_map.end()) {
-                    //items_map[items_size_total[i]] = items_map[items_size_total[i]] + items_size_total[i+1];
-                    current_item.value() += items_size_total[i+1];
-
-                }
-                else {
-                    //items_map.insert(std::pair<std::uint32_t, std::uint32_t>(items_size_total[i], items_size_total[i+1]));
-                    items_map.insert(std::make_pair(items_size_total[i], items_size_total[i+1]));
-                }
-            }
-
-            timer_group.stop();
-            cout << "Time involved in grouping items is: " << timer_group.seconds() << "s" << endl;
-
-            free(items_size_total);
-
-
             for(auto current_item = items_map.begin(); current_item != items_map.end(); ++current_item) {
                 if (current_item.value() > (std::uint32_t)maxlpf) {
                     total_to_delete++;
@@ -1030,7 +945,6 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
         }
 
-        free(items_size);
 
         MPI_Bcast(&total_to_delete, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
         //cout << "[JMABUIN] At proc " << my_id << " :: After Bcast1 :: Received: "<< total_to_delete << endl;
@@ -1048,15 +962,15 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
             }
         }
 
+        items_map.clear();
 
         MPI_Barrier(MPI_COMM_WORLD);
-        //cout << "[JMABUIN] At proc " << my_id << " :: Before Bcast2 :: " << endl;
+
         MPI_Bcast(items_to_delete, total_to_delete, MPI_UINT32_T, 0, MPI_COMM_WORLD);
 
         post_process_features_distributed(db, opt, items_to_delete, total_to_delete);
 
         MPI_Barrier(MPI_COMM_WORLD);
-        //cout << "[JMABUIN] Post processed features at proc " << my_id << " :: Now writing database :: " << endl;
     }
 
     timer time_write;

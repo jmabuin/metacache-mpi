@@ -4,4 +4,4 @@
 #SBATCH -c 4
 #SBATCH -p thinnodes
 #SBATCH -t 01:10:00
-srun ./QueryAFS20_8_S4_FT2.sh
+srun ./QueryAFS20_8_KAL_FT2_4T.sh

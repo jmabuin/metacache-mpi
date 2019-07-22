@@ -278,14 +278,12 @@ query_id query_batched_parallel(
         BufferSource&& getBuffer, BufferClassification&& bufclass, BufferUpdate&& update, BufferSink&& finalize,
         LogCallback&& log, int my_id)
 {
-    std::mutex results_mapMtx;
-    std::mutex addSeqMtx;
-    std::mutex writeoutMtx;
     std::mutex finalizeMtx;
 
-    tsl::hopscotch_map<std::uint_least64_t, classification_candidates> results_map(opt.queryLimit);
-    tsl::hopscotch_map<std::uint_least64_t, sequence_query> sequences_map(opt.queryLimit);
-    tsl::hopscotch_map<std::uint_least64_t, classification_candidates> all_results_map(opt.queryLimit);
+    std::vector<std::vector<classification_candidates>> results_map(opt.numThreads, std::vector<classification_candidates>());
+    std::vector<std::vector<sequence_query>> sequences_map(opt.numThreads, std::vector<sequence_query>());
+
+    tsl::hopscotch_map<std::uint_least64_t, classification_candidates> all_results_map(opt.numThreads * opt.queryLimit);
 
     // store id and position of most advanced thread
     std::mutex tipMtx;
@@ -300,11 +298,9 @@ query_id query_batched_parallel(
 
     //Gather number of items to receive from each rank
     int recvcnts[num_procs];
-    int displs[num_procs];
+    //int displs[num_procs];
     //int num_items_to_send;
 
-    unsigned queries_added = 0;
-    unsigned end_seq = startId + opt.queryLimit;
 
     if (my_id == 0) {
 
@@ -342,42 +338,39 @@ query_id query_batched_parallel(
                 local_thread_id++;
             }
 
-            //const auto readSequentially = opt.perThreadSequentialQueries;
-
             std::vector<sequence_pair_reader::sequence_pair> sequences;
-            //sequences.reserve(readSequentially);
-            reader.skip(startId);
+
+            unsigned local_startId = startId + (my_local_thread_id*opt.queryLimit);
+            unsigned end_seq = local_startId + opt.queryLimit;
+
+            if (my_id == 0) {
+                std::cout << "Thread " << my_local_thread_id << " processing from " << local_startId << " to "
+                          << end_seq << std::endl;
+            }
+
+            reader.skip(local_startId);
 
             match_locations matches;
             match_target_locations matchesBuffer;
             match_target_locations matchesBuffer2;
 
-            unsigned current_sequence = startId;
+            unsigned current_sequence = local_startId;
+
+            sequence_pair_reader::sequence_pair sequence_being_processed;
+            //unsigned queries_added = 0;
 
             //while(reader.has_next() && queryLimit > 0 && num_sequences < block_size) {
-            while(reader.has_next() && queries_added < opt.queryLimit) {
+            while(reader.has_next() && (current_sequence < end_seq)) {
 
-                //sequence_pair_reader::sequence_pair current_seq = reader.next();
-
-                if((current_sequence % opt.numThreads) == (unsigned)my_local_thread_id) {
-                    sequences.emplace_back(reader.next());
-                    {
-                        std::lock_guard<std::mutex> lock(addSeqMtx);
-                        queries_added++;
-                    }
-                }
-                else {
-                    reader.skip(1);
-                }
+                sequences.emplace_back(reader.next());
 
                 current_sequence++;
 
-                if(current_sequence >= end_seq) {
-                    break;
-                }
-
-
             }
+
+                /*std::cout << "Proc: "<< my_id <<", Thread " << my_local_thread_id << " number of sequences " << sequences.size()
+                          << std::endl;*/
+
 
             for(auto& seq : sequences) {
                 if(!seq.first.header.empty()) {
@@ -391,34 +384,31 @@ query_id query_batched_parallel(
                     // Sort by tgt and win
                     merge_sort(matchesBuffer, offsets, matchesBuffer2);
 
-                    {
-                        std::lock_guard<std::mutex> lock(results_mapMtx);
+                    sequence_query query{seq.first.index,
+                                                          seq.first.header,
+                                                          seq.first.data,
+                                                          seq.second.data};
 
-                        sequence_query query{seq.first.index,
-                                                              seq.first.header,
-                                                              seq.first.data,
-                                                              seq.second.data};
-
-                        matches.clear();
-                        for(auto& m : matchesBuffer)
-                            matches.emplace_back(db.taxon_of_target(m.tgt), m.win);
+                    matches.clear();
+                    for(auto& m : matchesBuffer)
+                        matches.emplace_back(db.taxon_of_target(m.tgt), m.win);
 
 
-                        classification_candidates cls = bufclass(sequence_query{seq.first.index,
-                                                                                             seq.first.header,
-                                                                                             seq.first.data,
-                                                                                             seq.second.data},
-                                                          matches);
+                    classification_candidates cls = bufclass(sequence_query{seq.first.index,
+                                                                                         seq.first.header,
+                                                                                         seq.first.data,
+                                                                                         seq.second.data},
+                                                      matches);
 
-                        //results_map[seq.first.index] = std::move(cls);//std::move(matches);
-                        results_map.emplace(seq.first.index, std::move(cls));
-                        sequences_map.emplace(seq.first.index, std::move(query));
-                    }
-
+                    results_map[my_local_thread_id].emplace_back(std::move(cls));
+                    sequences_map[my_local_thread_id].emplace_back(std::move(query));
 
                 }
 
             }
+
+                /*std::cout << "Proc: "<< my_id  << "Thread " << my_local_thread_id << " all sequences processed " << sequences.size()
+                          << std::endl;*/
 
             sequences.clear();
         })); //emplace
@@ -441,120 +431,169 @@ query_id query_batched_parallel(
         }
     }
 
+    unsigned total_size = 0;
 
-    qid += results_map.size();
+    for(int i = 0; i< opt.numThreads; ++i) {
 
-    auto current_seq = sequences_map.begin();
+        total_size += sequences_map[i].size();
+    }
+
+    //qid += results_map.size();
+    qid += total_size;
+
+
 
     timer time;
     if (my_id == 0) {
         time.start();
+        //std::cout << "Getting data: " << std::endl;
     }
 
     // First gather all data in rank 0
     std::vector<std::uint32_t> items_partial_vector;
-    //std::vector<std::uint32_t> received_locations_vector;
+    std::uint32_t *items_partial = nullptr;
 
-    for(auto item = results_map.begin(); (item != results_map.end()) && ( current_seq != sequences_map.end()); ++item, ++current_seq) {
-        for(const auto & current_item : item->second) {
 
-            items_partial_vector.push_back(current_seq->first);
-            items_partial_vector.push_back(current_item.tax->id());
-            items_partial_vector.push_back(current_item.hits);
+    if (my_id != 0) {
+        for(int i = 0; i< opt.numThreads; ++i) {
+
+            for(unsigned j = 0; j< sequences_map[i].size(); ++j) {
+
+                for(auto &current_class : results_map[i][j]){
+                    items_partial_vector.push_back(sequences_map[i][j].id);
+                    items_partial_vector.push_back(current_class.tax->id());
+                    items_partial_vector.push_back(current_class.hits);
+
+                }
+
+                //items_partial_vector.push_back(current_item.hits);
+            }
+
         }
+
+        items_partial = (std::uint32_t *) malloc(items_partial_vector.size() * sizeof(std::uint32_t));
+
+        std::copy(items_partial_vector.begin(), items_partial_vector.end(), items_partial);
+
+        //items_partial_vector.clear();
     }
 
-    unsigned *items_partial = (unsigned *) malloc(items_partial_vector.size() * sizeof(unsigned));
 
-    std::copy(items_partial_vector.begin(), items_partial_vector.end(), items_partial);
 
-    unsigned *received_locations = nullptr;//(unsigned *) calloc(254*num_procs, sizeof(unsigned));
+
+    std::uint32_t *received_locations = nullptr;//(unsigned *) calloc(254*num_procs, sizeof(unsigned));
 
     unsigned num_items = items_partial_vector.size();
 
     //MPI_Barrier(MPI_COMM_WORLD);
 
-    MPI_Gather(&num_items, 1, MPI_UNSIGNED, recvcnts, 1, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+    MPI_Gather(&num_items, 1, MPI_UINT32_T, recvcnts, 1, MPI_UINT32_T, 0, MPI_COMM_WORLD);
+
+
 
     candidate_generation_rules rules;
 
     rules.mergeBelow    = opt_class.lowestRank;
     rules.maxCandidates = opt_class.maxNumCandidatesPerQuery;
 
-    // Store items count and offsets
-    unsigned total_items = 0;
 
     if (my_id == 0) {
 
+        std::uint_least64_t current_seq_id;
 
+        for(int i = 0; i< opt.numThreads; ++i) {
 
-        for(int k = 0; k< num_procs; ++k) {
+            for(unsigned j = 0; j< sequences_map[i].size(); ++j) {
 
+                for(auto &current_class : results_map[i][j]){
 
-            total_items += recvcnts[k];
+                    current_seq_id = (std::uint_least64_t)sequences_map[i][j].id;
 
-            if (k == 0) {
-                displs[k] = 0;
+                    match_candidate cand{db.taxon_with_id(current_class.tax->id()), current_class.hits};
+
+                    auto current_item = all_results_map.find(current_seq_id);
+                    if (current_item != all_results_map.end()) {
+                        //all_results_map[current_seq_id] = classification_candidates();
+                        current_item.value().insert(cand, db, rules);
+                    }
+                    else {
+                        classification_candidates  candidates;
+                        candidates.insert(cand, db, rules);
+                        //all_results_map[current_seq_id] = std::move(candidates);
+                        all_results_map.insert(std::make_pair(current_seq_id, std::move(candidates)));
+                    }
+
+                }
+
+                //items_partial_vector.push_back(current_item.hits);
             }
-            else {
-                displs[k] = displs[k-1] + recvcnts[k-1];
-            }
+
         }
 
-        received_locations = (unsigned *) malloc(total_items * sizeof(unsigned));
-
+        results_map.clear();
 
     }
 
-    // Gather all data
-    //TODO: Change and use a send/rec policy to be able to use more than 2 billion items
-    MPI_Gatherv(items_partial, num_items, MPI_UNSIGNED, received_locations, recvcnts, displs, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+    //MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Status status;
 
 
-    if (my_id == 0) {
+    for(int j = 1; j< num_procs; ++j) {
 
-        std::uint_least64_t current_seq_id;// = received_locations[0];
+        if (my_id == 0) {
+            std::uint_least64_t current_seq_id;
 
+            received_locations = (std::uint32_t *) malloc(recvcnts[j] * sizeof(std::uint32_t));
 
-        //TODO: Change insertion to use one and only one access to map
-        for(unsigned k = 0; k< total_items; k+=3) {
+            MPI_Recv(received_locations, (int)recvcnts[j], MPI_UINT32_T, j, j+num_procs, MPI_COMM_WORLD, &status);
 
-            current_seq_id = (std::uint_least64_t)received_locations[k];
+            //std::cout << "Rank " << my_id << " Recv from rank " << j << ". Items:: " << recvcnts[j] << std::endl;
 
-            if (all_results_map.find(current_seq_id) == all_results_map.end()) {
-                all_results_map[current_seq_id] = classification_candidates();
+            for(unsigned k = 0; k< (unsigned)recvcnts[j]; k+=3) {
+                //std::cout << "Rank " << my_id << " K " << k << ". Items:: " << received_locations[k] << std::endl;
+                current_seq_id = (std::uint_least64_t)received_locations[k];
+                //std::cout << "Rank " << my_id << " K " << k << ". Items:: " << received_locations[k +1] << std::endl;
+                //std::cout << "Rank " << my_id << " K " << k << ". Items:: " << received_locations[k+2] << std::endl;
+
+                match_candidate cand{db.taxon_with_id(received_locations[k + 1]), received_locations[k + 2]};
+
+                auto current_item = all_results_map.find(current_seq_id);
+                if (current_item != all_results_map.end()) {
+                    //all_results_map[current_seq_id] = classification_candidates();
+                    current_item.value().insert(cand, db, rules);
+                }
+                else {
+                    classification_candidates  candidates;
+                    candidates.insert(cand, db, rules);
+                    //all_results_map[current_seq_id] = std::move(candidates);
+                    all_results_map.insert(std::make_pair(current_seq_id, std::move(candidates)));
+                }
             }
 
-            match_candidate cand{db.taxon_with_id(received_locations[k + 1]), received_locations[k + 2]};
+            //std::cout << "Rank " << my_id << " Size of map " << all_results_map.size() << std::endl;
 
-            all_results_map[current_seq_id].insert(cand, db, rules);
+            free(received_locations);
+
+
+        }
+        else if (my_id == j) {
+            //std::cout << "Sending from Rank " << my_id << " to rank 0. Items:: " << num_items << std::endl;
+            MPI_Send(items_partial, num_items, MPI_UINT32_T, 0, j+num_procs, MPI_COMM_WORLD);
         }
 
+    }
 
-        //This code is the one-thread version
-        /*for(auto current_sequence = sequences_map.begin(); current_sequence!= sequences_map.end(); ++current_sequence) {
-            auto batchBuffer = getBuffer();
+    MPI_Barrier(MPI_COMM_WORLD);
 
-            classification_candidates cls;
+    if (my_id != 0) {
+        free(items_partial);
+        items_partial_vector.clear();
+        results_map.clear();
+        //std::cout << "All cleared in rank " << my_id  << std::endl;
+    } else {
+        time.stop();
 
-            auto current = all_results_map.find(current_sequence->first);
-
-            if (current != all_results_map.end()) {
-                cls = current->second;
-            }
-
-                update(batchBuffer,
-                       sequence_query{current_sequence->second.id,//current_seq->second.id,
-                                      current_sequence->second.header,
-                                      current_sequence->second.seq1,
-                                      current_sequence->second.seq2},
-                       cls);
-
-            finalize(std::move(batchBuffer));
-
-
-        }*/
-
+        std::cout << "Time involved in receive and process data: " << time.seconds() << "s." << std::endl;
 
         // From here, multi-thread
         threads.clear();
@@ -580,15 +619,15 @@ query_id query_batched_parallel(
                     local_thread_id++;
                 }
 
-                int current_seq = 0;
+                //int current_seq = 0;
 
-                for(auto current_sequence = sequences_map.begin(); current_sequence!= sequences_map.end(); ++current_sequence) {
+                for(auto &current_sequence : sequences_map[my_local_thread_id]) {
 
                     //if(((current_seq % opt.numThreads) == my_local_thread_id) && (!current.second.empty())) {
-                    if(((current_seq % opt.numThreads) == my_local_thread_id)) {
+                    //if(((current_seq % opt.numThreads) == my_local_thread_id)) {
                         classification_candidates cls;
 
-                        auto current = all_results_map.find(current_sequence->first);
+                        auto current = all_results_map.find(current_sequence.id);
 
                         if (current != all_results_map.end()) {
                             bufferEmpty = false;
@@ -596,13 +635,13 @@ query_id query_batched_parallel(
                         }
 
                         update(batchBuffer,
-                               sequence_query{current_sequence->second.id,//current_seq->second.id,
-                                              current_sequence->second.header,
-                                              current_sequence->second.seq1,
-                                              current_sequence->second.seq2},
+                               sequence_query{current_sequence.id,//current_seq->second.id,
+                                              current_sequence.header,
+                                              current_sequence.seq1,
+                                              current_sequence.seq2},
                                cls);
-                    }
-                    current_seq++;
+                    //}
+                    //current_seq++;
                 }
 
                 if(!bufferEmpty) {
@@ -633,15 +672,20 @@ query_id query_batched_parallel(
 
 
         // Common code
-        free(received_locations);
+        //free(received_locations);
 
     }
 
-    free(items_partial);
+
     items_partial_vector.clear();
     sequences_map.clear();
+    /*for(int i = 0; i< opt.numThreads; ++i) {
+        sequences_map[i].clear();
+        results_map[i].clear();
+    }*/
+
     all_results_map.clear();
-    results_map.clear();
+
 
     if (my_id == 0) {
         std::ifstream is{"/proc/self/status"};
@@ -814,6 +858,8 @@ void query_database(
         std::map<std::uint_least64_t ,sequence_query> *sequences_map = new std::map<std::uint_least64_t ,sequence_query>();
         std::map<std::uint_least64_t, classification_candidates> *all_results_map = new std::map<std::uint_least64_t, classification_candidates>();*/
 
+        std::cout << "Starting to process files in rank: " << my_id << std::endl;
+
         for(size_t i = 0; i < infilenames.size(); i += stride+1) {
             //pair up reads from two consecutive files in the list
             const auto& fname1 = infilenames[i];
@@ -845,8 +891,8 @@ void query_database(
             if(my_id == 0) {
                 std::cout << "Num sequences is: " << num_seq << std::endl;
             }
-
-            for(readIdOffset = 0; readIdOffset < num_seq; readIdOffset += block_size) {
+            MPI_Barrier(MPI_COMM_WORLD);
+            for(readIdOffset = 0; readIdOffset < num_seq; readIdOffset += (block_size * opt.numThreads)) {
 
                 /*readIdOffset_two = query_batched_parallel_basic(fname1, fname2, db, opt, opt_class, readIdOffset,
                                                           std::forward<BufferSource>(bufsrc),

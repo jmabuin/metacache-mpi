@@ -890,7 +890,7 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
                 items_size_total = (std::uint32_t *) malloc(recvcnts[j] * sizeof(std::uint32_t));
                 MPI_Recv(items_size_total, (int)recvcnts[j], MPI_UINT32_T, j, j+num_procs, MPI_COMM_WORLD, &status);
-                cout << "Rank " << my_id << " Recv from rank " << j << ". Offset: " << recvcnts[j] << endl;
+                cout << "Rank " << my_id << " Recv from rank " << j << ". Items:: " << recvcnts[j] << endl;
 
                 for(unsigned k = 0; k< recvcnts[j]; k+=2) {
                     auto current_item = items_map.find(items_size_total[k]);

@@ -28,30 +28,30 @@ rm -Rf /media/glusterfs/genomics/Databases/AFS31RS90_128/*
 
 for i in 1 2
 do
-    ./BuildGeneric_BD.sh AFS20 4
-    ./BuildGeneric_BD.sh AFS20 8
-    ./BuildGeneric_BD.sh AFS20 16
-    ./BuildGeneric_BD.sh AFS20 32
-    ./BuildGeneric_BD.sh AFS20 64
-    ./BuildGeneric_BD.sh AFS20 128
-    ./BuildGeneric_BD.sh AFS31 4
-    ./BuildGeneric_BD.sh AFS31 8
-    ./BuildGeneric_BD.sh AFS31 16
-    ./BuildGeneric_BD.sh AFS31 32
-    ./BuildGeneric_BD.sh AFS31 64
-    ./BuildGeneric_BD.sh AFS31 128
-    ./BuildGeneric_BD.sh AFS20RS90 4
-    ./BuildGeneric_BD.sh AFS20RS90 8
-    ./BuildGeneric_BD.sh AFS20RS90 16
-    ./BuildGeneric_BD.sh AFS20RS90 32
-    ./BuildGeneric_BD.sh AFS20RS90 64
-    ./BuildGeneric_BD.sh AFS20RS90 128
-    ./BuildGeneric_BD.sh AFS31RS90 4
-    ./BuildGeneric_BD.sh AFS31RS90 8
-    ./BuildGeneric_BD.sh AFS31RS90 16
-    ./BuildGeneric_BD.sh AFS31RS90 32
-    ./BuildGeneric_BD.sh AFS31RS90 64
-    ./BuildGeneric_BD.sh AFS31RS90 128
+    BuildGeneric_BD.sh AFS20 4
+    BuildGeneric_BD.sh AFS20 8
+    BuildGeneric_BD.sh AFS20 16
+    BuildGeneric_BD.sh AFS20 32
+    BuildGeneric_BD.sh AFS20 64
+    BuildGeneric_BD.sh AFS20 128
+    BuildGeneric_BD.sh AFS31 4
+    BuildGeneric_BD.sh AFS31 8
+    BuildGeneric_BD.sh AFS31 16
+    BuildGeneric_BD.sh AFS31 32
+    BuildGeneric_BD.sh AFS31 64
+    BuildGeneric_BD.sh AFS31 128
+    BuildGeneric_BD.sh AFS20RS90 4
+    BuildGeneric_BD.sh AFS20RS90 8
+    BuildGeneric_BD.sh AFS20RS90 16
+    BuildGeneric_BD.sh AFS20RS90 32
+    BuildGeneric_BD.sh AFS20RS90 64
+    BuildGeneric_BD.sh AFS20RS90 128
+    BuildGeneric_BD.sh AFS31RS90 4
+    BuildGeneric_BD.sh AFS31RS90 8
+    BuildGeneric_BD.sh AFS31RS90 16
+    BuildGeneric_BD.sh AFS31RS90 32
+    BuildGeneric_BD.sh AFS31RS90 64
+    BuildGeneric_BD.sh AFS31RS90 128
 
     rm -Rf /media/glusterfs/genomics/Databases/AFS20_4/*
     rm -Rf /media/glusterfs/genomics/Databases/AFS20_8/*
@@ -80,27 +80,27 @@ do
 
 done
 
-./BuildGeneric_BD.sh AFS20 4
-./BuildGeneric_BD.sh AFS20 8
-./BuildGeneric_BD.sh AFS20 16
-./BuildGeneric_BD.sh AFS20 32
-./BuildGeneric_BD.sh AFS20 64
-./BuildGeneric_BD.sh AFS20 128
-./BuildGeneric_BD.sh AFS31 4
-./BuildGeneric_BD.sh AFS31 8
-./BuildGeneric_BD.sh AFS31 16
-./BuildGeneric_BD.sh AFS31 32
-./BuildGeneric_BD.sh AFS31 64
-./BuildGeneric_BD.sh AFS31 128
-./BuildGeneric_BD.sh AFS20RS90 4
-./BuildGeneric_BD.sh AFS20RS90 8
-./BuildGeneric_BD.sh AFS20RS90 16
-./BuildGeneric_BD.sh AFS20RS90 32
-./BuildGeneric_BD.sh AFS20RS90 64
-./BuildGeneric_BD.sh AFS20RS90 128
-./BuildGeneric_BD.sh AFS31RS90 4
-./BuildGeneric_BD.sh AFS31RS90 8
-./BuildGeneric_BD.sh AFS31RS90 16
-./BuildGeneric_BD.sh AFS31RS90 32
-./BuildGeneric_BD.sh AFS31RS90 64
-./BuildGeneric_BD.sh AFS31RS90 128
+BuildGeneric_BD.sh AFS20 4
+BuildGeneric_BD.sh AFS20 8
+BuildGeneric_BD.sh AFS20 16
+BuildGeneric_BD.sh AFS20 32
+BuildGeneric_BD.sh AFS20 64
+BuildGeneric_BD.sh AFS20 128
+BuildGeneric_BD.sh AFS31 4
+BuildGeneric_BD.sh AFS31 8
+BuildGeneric_BD.sh AFS31 16
+BuildGeneric_BD.sh AFS31 32
+BuildGeneric_BD.sh AFS31 64
+BuildGeneric_BD.sh AFS31 128
+BuildGeneric_BD.sh AFS20RS90 4
+BuildGeneric_BD.sh AFS20RS90 8
+BuildGeneric_BD.sh AFS20RS90 16
+BuildGeneric_BD.sh AFS20RS90 32
+BuildGeneric_BD.sh AFS20RS90 64
+BuildGeneric_BD.sh AFS20RS90 128
+BuildGeneric_BD.sh AFS31RS90 4
+BuildGeneric_BD.sh AFS31RS90 8
+BuildGeneric_BD.sh AFS31RS90 16
+BuildGeneric_BD.sh AFS31RS90 32
+BuildGeneric_BD.sh AFS31RS90 64
+BuildGeneric_BD.sh AFS31RS90 128

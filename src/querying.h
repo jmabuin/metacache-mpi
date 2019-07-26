@@ -550,10 +550,8 @@ query_id query_batched_parallel(
             //std::cout << "Rank " << my_id << " Recv from rank " << j << ". Items:: " << recvcnts[j] << std::endl;
 
             for(unsigned k = 0; k< (unsigned)recvcnts[j]; k+=3) {
-                //std::cout << "Rank " << my_id << " K " << k << ". Items:: " << received_locations[k] << std::endl;
+
                 current_seq_id = (std::uint_least64_t)received_locations[k];
-                //std::cout << "Rank " << my_id << " K " << k << ". Items:: " << received_locations[k +1] << std::endl;
-                //std::cout << "Rank " << my_id << " K " << k << ". Items:: " << received_locations[k+2] << std::endl;
 
                 match_candidate cand{db.taxon_with_id(received_locations[k + 1]), received_locations[k + 2]};
 

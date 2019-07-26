@@ -28,6 +28,10 @@ case "$PROCESSES_NUMBER" in
             NODES_FILE="/home/remoto/josemanuel.abuin/nodefilesmall"
             ;;
 
+        128)
+            NODES_FILE="/home/remoto/josemanuel.abuin/nodefilebig"
+            ;;
+
         *)
             NODES_FILE="/home/remoto/josemanuel.abuin/nodefile"
             ;;

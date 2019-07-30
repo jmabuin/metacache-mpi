@@ -567,8 +567,15 @@ void add_targets_to_database(database& db,
     int i = 0;
     //unsigned long current_sequence = 0;
 
+    std::vector<std::string> infiles_sorted(infiles.size());
+
+    std::copy(infiles.begin(), infiles.end(), infiles_sorted.begin());
+
+    // To be sure that all ranks access files in the same order
+    std::sort (infiles_sorted.begin(), infiles_sorted.end());
+
     //read sequences
-    for(const auto& filename : infiles) {
+    for(const auto& filename : infiles_sorted) {
         if(infoLvl == info_level::verbose) {
             cout << "  " << filename << " in rank " << my_id <<" ... " << flush;
         } else if((infoLvl != info_level::silent) && (my_id == 0)) {

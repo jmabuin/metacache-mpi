@@ -110,5 +110,6 @@ echo "Nodefile: $NODES_FILE"
 echo "Database name: $DATABASE_NAME"
 echo "Output: $OUTPUT_DIR"
 echo "Input sequences: $INPUT_SEQUENCES"
+echo "Query limit: $QUERY_LIMIT"
 
 ${BIN_PATH} query ${DATABASE_NAME} ${INPUT_SEQUENCES} -lowest species -threads ${THREADS_NUMBER} -abundance-per species -pairfiles -out ${OUTPUT_DIR} -maxcand 4 -hitmin 4 -hitdiff 80 -query-limit ${QUERY_LIMIT}

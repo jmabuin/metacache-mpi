@@ -852,6 +852,183 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
         tsl::hopscotch_map<std::uint32_t , std::uint32_t > items_map;
 
+        std::uint32_t *items_size_total = nullptr;
+
+        MPI_Status status;
+        timer timer_messages;
+
+        if(my_id == 0) {
+            timer_messages.start();
+
+        }
+
+        // Senders and receivers
+        std::set<int> senders;
+        std::set<int> receivers;
+
+        for(int i = 0; i < num_procs; ++i) {
+            if( i % 2 == 0) {
+                receivers.insert(i);
+            }
+            else {
+                senders.insert(i);
+            }
+        }
+
+
+        for(int i = num_procs; i > 1; i = i/2) {
+
+            std::vector<int> senders_to_process;
+            std::vector<int> receivers_to_process;
+
+            // Iterate over senders and receivers
+            for(auto current_sender = senders.begin(), current_receiver = receivers.begin(); (current_sender != senders.end()) && (current_receiver != receivers.end()); current_sender++, current_receiver++) {
+
+                int sender = *current_sender;
+                int receiver = *current_receiver;
+
+                //if (receivers.find(receiver) != receivers.end()) {
+
+                std::uint32_t num_items_to_send;
+
+                if (my_id == sender) {
+
+                    if (items_map.size() == 0) {
+                        num_items_to_send = db.feature_count() * 2;
+                    }
+                    else {
+                        num_items_to_send = items_map.size() * 2;
+                    }
+
+                    MPI_Send(&num_items_to_send, 1, MPI_UINT32_T, receiver, receiver+num_procs, MPI_COMM_WORLD);
+
+                    if (items_map.size() > 0) {
+                        //free(items_size);
+
+                        items_size = (std::uint32_t *) malloc(items_map.size() * 2 * sizeof(std::uint32_t));
+
+                        unsigned k = 0;
+                        for(auto current_item = items_map.begin(); current_item != items_map.end(); ++current_item) {
+
+                            items_size[k] = current_item.key();
+                            items_size[k+1] = current_item.value();
+
+                            k += 2;
+                        }
+                    }
+
+                    MPI_Send(items_size, num_items_to_send, MPI_UINT32_T, receiver, sender+num_procs, MPI_COMM_WORLD);
+
+                    free(items_size);
+
+                }
+                else if (my_id == receiver) {
+
+                    // If first iteration, local hashmap is empty, fill with local data
+                    if(items_map.size() == 0) {
+                        for(unsigned k = 0; k< db.feature_count() * 2; k+=2) {
+
+                            auto current_item = items_map.find(items_size[k]);
+                            if(current_item != items_map.end()) {
+                                //items_map[items_size_total[i]] = items_map[items_size_total[i]] + items_size_total[i+1];
+                                current_item.value() += items_size[k+1];
+
+                            }
+                            else {
+                                //items_map.insert(std::pair<std::uint32_t, std::uint32_t>(items_size_total[i], items_size_total[i+1]));
+                                items_map.insert(std::make_pair(items_size[k], items_size[k+1]));
+                            }
+
+
+                        }
+
+                        free(items_size);
+                    }
+
+
+                    // Rec number of items to obtain from sender
+                    MPI_Recv(&num_items_to_send, 1, MPI_UINT32_T, sender, receiver+num_procs, MPI_COMM_WORLD, &status);
+
+                    // Reserve memory
+                    items_size_total = (std::uint32_t *) malloc(num_items_to_send * sizeof(std::uint32_t));
+
+                    // Receive items
+                    MPI_Recv(items_size_total, (int)num_items_to_send, MPI_UINT32_T, sender, sender+num_procs, MPI_COMM_WORLD, &status);
+                    cout << "Rank " << my_id << " Recv from rank " << sender << ". Items:: " << num_items_to_send << endl;
+
+                    for(unsigned k = 0; k< num_items_to_send; k+=2) {
+                        auto current_item = items_map.find(items_size_total[k]);
+                        if(current_item != items_map.end()) {
+                            //items_map[items_size_total[i]] = items_map[items_size_total[i]] + items_size_total[i+1];
+                            current_item.value() += items_size_total[k+1];
+
+                        }
+                        else {
+                            //items_map.insert(std::pair<std::uint32_t, std::uint32_t>(items_size_total[i], items_size_total[i+1]));
+                            items_map.insert(std::make_pair(items_size_total[k], items_size_total[k+1]));
+                        }
+                    }
+
+                    free(items_size_total);
+
+                }
+
+
+                senders_to_process.emplace_back(sender);
+                receivers_to_process.emplace_back(receiver);
+                //}
+
+            }
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            for (int current_item : senders_to_process) {
+
+                auto sender_to_delete = senders.find(current_item);
+
+                if (sender_to_delete != senders.end()) {
+                    senders.erase(sender_to_delete);
+                }
+
+            }
+
+            bool do_delete = false;
+
+            for(int current_item: receivers_to_process) {
+
+                if (do_delete) {
+
+                    auto receiver_to_delete = receivers.find(current_item);
+
+                    if (receiver_to_delete != receivers.end()) {
+
+                        receivers.erase(receiver_to_delete);
+                        senders.insert(current_item);
+                        do_delete = false;
+
+                    }
+                }
+                else {
+                    do_delete = true;
+                }
+
+
+            }
+
+            senders_to_process.clear();
+            receivers_to_process.clear();
+
+
+        }
+
+        // Previous implementation
+        /*
+        // Obtain features and number of items from all ranks
+        std::uint32_t *items_size = (std::uint32_t *) malloc(db.feature_count() * 2 * sizeof(std::uint32_t));
+        db.get_keys_num_items(items_size);
+
+        tsl::hopscotch_map<std::uint32_t , std::uint32_t > items_map;
+
         //Gather number of items to receive from each rank
         std::uint32_t recvcnts[num_procs];
         std::uint32_t num_items_to_send;
@@ -926,7 +1103,7 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
         if (my_id != 0) {
             free(items_size);
         }
-
+        */
 
         MPI_Barrier(MPI_COMM_WORLD);
 

@@ -954,7 +954,7 @@ void add_to_database(database& db, const build_options& opt, int my_id, int num_
 
                     // Receive items
                     MPI_Recv(items_size_total, (int)num_items_to_send, MPI_UINT32_T, sender, sender+num_procs, MPI_COMM_WORLD, &status);
-                    cout << "Rank " << my_id << " Recv from rank " << sender << ". Items:: " << num_items_to_send << endl;
+                    //cout << "Rank " << my_id << " Recv from rank " << sender << ". Items:: " << num_items_to_send << endl;
 
                     for(unsigned k = 0; k< num_items_to_send; k+=2) {
                         auto current_item = items_map.find(items_size_total[k]);

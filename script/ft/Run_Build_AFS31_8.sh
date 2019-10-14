@@ -4,4 +4,4 @@
 #SBATCH -p thinnodes
 #SBATCH -t 03:10:00
 module load openmpi-runtime/2.1.6
-srun ./BuildGeneric_FT.sh AFS31RS90 8
+srun ./BuildGeneric_FT.sh AFS31 8

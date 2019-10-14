@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
 
-#rm -Rf /home/josemanuel.abuin/Genomics/Databases/AFS31RS90_8/*
-#rm -Rf /home/josemanuel.abuin/Genomics/Databases/AFS31RS90_16/*
-#rm -Rf /home/josemanuel.abuin/Genomics/Databases/AFS31RS90_32/*
-rm -Rf /home/josemanuel.abuin/Genomics/Databases/AFS31RS90_64/*
-rm -Rf /home/josemanuel.abuin/Genomics/Databases/AFS31RS90_128/*
+DATASETS=( "AFS20" "AFS20RS90" "AFS31" "AFS31RS90")
+PROCESSES_NUMBERS=( "8" "16" "32" "64" "128")
 
+nodes=( "nodo2" "nodo5" "nodo6" "nodo7" "nodo8" "nodo9" "nodo10" "nodo11" "nodo12" "nodo13" "nodo14" "nodo15")
 
-for i in 1 2
+for i in 1 2 3
 do
- #   ./BuildGeneric_Local_BD.sh AFS31RS90 8
- #   ./BuildGeneric_Local_BD.sh AFS31RS90 16
- #   ./BuildGeneric_Local_BD.sh AFS31RS90 32
-    ./BuildGeneric_Local_BD.sh AFS31RS90 64
-    ./BuildGeneric_Local_BD.sh AFS31RS90 128
+    for DATASET in "${DATASETS[@]}"
+    do
+        for PROCESSES_NUMBER in "${PROCESSES_NUMBERS[@]}"
+        do
+            ORDER="rm -Rf /home/josemanuel.abuin/Genomics/Databases/${DATASET}_${PROCESSES_NUMBER}/*"
 
-  #  rm -Rf /home/josemanuel.abuin/Genomics/Databases/AFS31RS90_8/*
-  #  rm -Rf /home/josemanuel.abuin/Genomics/Databases/AFS31RS90_16/*
-  #  rm -Rf /home/josemanuel.abuin/Genomics/Databases/AFS31RS90_32/*
-    rm -Rf /home/josemanuel.abuin/Genomics/Databases/AFS31RS90_64/*
-    rm -Rf /home/josemanuel.abuin/Genomics/Databases/AFS31RS90_128/*
+            for node in "${nodes[@]}"
+            do
+	              ssh $node "${ORDER}"
+            done
+
+           ./BuildGeneric_Local_BD.sh ${DATASET} ${PROCESSES_NUMBER}
+
+        done
+
+    done
 
 done
-
-#./BuildGeneric_Local_BD.sh AFS31RS90 8
-#./BuildGeneric_Local_BD.sh AFS31RS90 16
-#./BuildGeneric_Local_BD.sh AFS31RS90 32
-./BuildGeneric_Local_BD.sh AFS31RS90 64
-./BuildGeneric_Local_BD.sh AFS31RS90 128

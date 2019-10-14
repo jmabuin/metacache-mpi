@@ -17,10 +17,29 @@ elif [[ "$#" -eq 2 ]]; then
     PROCESSES_NUMBER=$2
 fi
 
+case "$DATASET" in
+        AFS20)
+            INPUT_SEQUENCES="/mnt/lustre/scratch/home/usc/ec/jam/Genomica/AFS20RS90/AFS/"
+            ;;
 
+        AFS20RS90)
+            INPUT_SEQUENCES="/mnt/lustre/scratch/home/usc/ec/jam/Genomica/AFS20RS90/"
+            ;;
+
+        AFS31)
+            INPUT_SEQUENCES="/mnt/lustre/scratch/home/usc/ec/jam/Genomica/AFS31RS90/AFS/"
+            ;;
+
+        AFS31RS90)
+            INPUT_SEQUENCES="/mnt/lustre/scratch/home/usc/ec/jam/Genomica/AFS31RS90/"
+            ;;
+
+        *)
+            INPUT_SEQUENCES="/mnt/lustre/scratch/home/usc/ec/jam/Genomica/AFS20RS90/AFS/"
+            ;;
 
 #Set dataset and output dir
-INPUT_SEQUENCES="/mnt/lustre/scratch/home/usc/ec/jam/Genomica/${DATASET}/"
+
 OUTPUT_DIR="/mnt/lustre/scratch/home/usc/ec/jam/Genomica/Databases/${DATASET}_${PROCESSES_NUMBER}/DB_${DATASET}.db"
 
 echo "Dataset: ${DATASET}"

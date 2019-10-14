@@ -25,6 +25,14 @@ case "$PROCESSES_NUMBER" in
             ;;
 
         8)
+            NODES_FILE="/home/remoto/josemanuel.abuin/nodefileverysmall"
+            ;;
+
+        16)
+            NODES_FILE="/home/remoto/josemanuel.abuin/nodefileverysmall"
+            ;;
+
+        32)
             NODES_FILE="/home/remoto/josemanuel.abuin/nodefilesmall"
             ;;
 

@@ -743,32 +743,6 @@ query_id query_batched_parallel2(
     int num_procs;
     MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
 
-    //Gather number of items to receive from each rank
-    //int recvcnts[num_procs];
-    //int displs[num_procs];
-    //int num_items_to_send;
-
-
-    if (my_id == 0) {
-
-        std::ifstream is {"/proc/self/status"};
-
-        std::string input_line;
-
-        if (is.is_open()) {
-            std::string line;
-            while (getline(is, line)) {
-                if(line.substr(0,6).compare("VmRSS:") == 0 ) {
-                    std::cout << "Before start: " << line << std::endl;
-                    break;
-                }
-
-            }
-            is.close();
-        }
-
-    }
-
     // assign work to threads
     int local_thread_id = 0;
 
@@ -815,10 +789,6 @@ query_id query_batched_parallel2(
 
             }
 
-            /*std::cout << "Proc: "<< my_id <<", Thread " << my_local_thread_id << " number of sequences " << sequences.size()
-                      << std::endl;*/
-
-
             for(auto& seq : sequences) {
                 if(!seq.first.header.empty()) {
                     //bufferEmpty = false;
@@ -854,10 +824,8 @@ query_id query_batched_parallel2(
 
             }
 
-            /*std::cout << "Proc: "<< my_id  << "Thread " << my_local_thread_id << " all sequences processed " << sequences.size()
-                      << std::endl;*/
-
             sequences.clear();
+
         })); //emplace
     }
 
@@ -1100,10 +1068,6 @@ query_id query_batched_parallel2(
         senders_to_process.clear();
         receivers_to_process.clear();
 
-        //if (my_id == 0) {
-        //    std::cout << "=================================" << std::endl;
-        //}
-
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -1120,8 +1084,6 @@ query_id query_batched_parallel2(
 
         // assign work to threads
         local_thread_id = 0;
-
-
 
         for(int thread_id = 0; thread_id < opt.numThreads; ++thread_id) {
 
@@ -1206,22 +1168,6 @@ query_id query_batched_parallel2(
 
     all_results_map.clear();
 
-
-    if (my_id == 0) {
-        std::ifstream is{"/proc/self/status"};
-
-        if (is.is_open()) {
-            std::string line;
-            while (getline(is, line)) {
-                if (line.substr(0, 6).compare("VmRSS:") == 0) {
-                    std::cout << "Final memory: " << line << std::endl;
-                    break;
-                }
-
-            }
-            is.close();
-        }
-    }
 
     return qid;
 }

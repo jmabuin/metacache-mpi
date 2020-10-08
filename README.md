@@ -4,7 +4,7 @@
 
 If you use **MetaCache-MPI**, please cite this article:
 
-> TBA
+> José M. Abuín, Nuno Lopes, Luís Ferreira, Tomás F. Pena and Bertil Schmidt. ["Big Data in metagenomics: Apache Spark vs MPI"][4]. PLoS ONE 15(10). 06 October 2020.
 
 The original **MetaCacheSpark** and **metacache** articles are:
 
@@ -42,3 +42,4 @@ Regarding the parameters related to the algorithm itself, **metacache-mpi** uses
 [1]: https://github.com/muellan/metacache
 [2]: https://doi.org/10.1093/bioinformatics/btx520
 [3]: http://dx.doi.org/10.1186%2Fs12859-020-3429-6
+[4]: https://doi.org/10.1371/journal.pone.0239741
